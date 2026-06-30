@@ -184,13 +184,15 @@ textarea { min-height: 200px; font-family: monospace; }
   margin-bottom: 0.5rem;
 }
 
-.table-multi-select {
+.table-multi-select,
+.searchable-multi-select {
   position: relative;
   flex: 1;
   min-width: 180px;
 }
 
-.table-multi-select-trigger {
+.table-multi-select-trigger,
+.searchable-multi-select-trigger {
   width: 100%;
   display: flex;
   align-items: center;
@@ -205,18 +207,21 @@ textarea { min-height: 200px; font-family: monospace; }
   text-align: left;
 }
 
-.table-multi-select-label {
+.table-multi-select-label,
+.searchable-multi-select-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.table-multi-select-caret {
+.table-multi-select-caret,
+.searchable-multi-select-caret {
   color: #9ca3af;
   font-size: 0.7rem;
 }
 
-.table-multi-select-menu {
+.table-multi-select-menu,
+.searchable-multi-select-menu {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
@@ -232,7 +237,15 @@ textarea { min-height: 200px; font-family: monospace; }
   text-align: left;
 }
 
-.table-multi-select-item {
+.searchable-multi-select-search {
+  width: 100%;
+  margin-bottom: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.875rem;
+}
+
+.table-multi-select-item,
+.searchable-multi-select-item {
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -242,7 +255,8 @@ textarea { min-height: 200px; font-family: monospace; }
   text-align: left;
 }
 
-.table-multi-select-item input[type="checkbox"] {
+.table-multi-select-item input[type="checkbox"],
+.searchable-multi-select-item input[type="checkbox"] {
   width: auto;
   min-width: 1rem;
   flex-shrink: 0;
@@ -250,12 +264,14 @@ textarea { min-height: 200px; font-family: monospace; }
   cursor: pointer;
 }
 
-.table-multi-select-item:hover {
+.table-multi-select-item:hover,
+.searchable-multi-select-item:hover {
   background: #1f2937;
   border-radius: 4px;
 }
 
-.table-multi-select-empty {
+.table-multi-select-empty,
+.searchable-multi-select-empty {
   padding: 0.5rem;
   color: #9ca3af;
   font-size: 0.875rem;

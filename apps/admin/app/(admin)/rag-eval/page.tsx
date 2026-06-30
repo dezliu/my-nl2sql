@@ -4,6 +4,7 @@ import { gql, useLazyQuery, useMutation, useQuery } from "@apollo/client";
 import { useState } from "react";
 
 import { AdminErrorBanner } from "../../../components/AdminErrorBanner";
+import { ChunkMultiSelect } from "../../../components/ChunkMultiSelect";
 import { TableMultiSelect } from "../../../components/TableMultiSelect";
 import { formatMutationError } from "../../../lib/mutation-error";
 
@@ -138,15 +139,6 @@ type EvalRunSummary = {
   createdAt: string;
 };
 
-function parseIntList(value: string): number[] {
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => Number(s))
-    .filter((n) => !Number.isNaN(n));
-}
-
 function formatPct(value: number | null | undefined): string {
   if (value == null) return "-";
   return `${(value * 100).toFixed(1)}%`;
@@ -162,7 +154,7 @@ export default function RagEvalPage() {
     question: "",
     datasourceId: "" as string | number,
     expectedTables: [] as string[],
-    expectedChunkIds: "",
+    expectedChunkIds: [] as number[],
     note: "",
     enabled: true,
   });
@@ -170,7 +162,7 @@ export default function RagEvalPage() {
     question: "",
     datasourceId: "" as string | number,
     expectedTables: [] as string[],
-    expectedChunkIds: "",
+    expectedChunkIds: [] as number[],
     note: "",
     enabled: true,
   });
@@ -198,7 +190,7 @@ export default function RagEvalPage() {
       question: c.question,
       datasourceId: c.datasourceId ?? "",
       expectedTables: c.expectedTables || [],
-      expectedChunkIds: (c.expectedChunkIds || []).join(", "),
+      expectedChunkIds: c.expectedChunkIds || [],
       note: c.note || "",
       enabled: c.enabled,
     });
@@ -209,7 +201,7 @@ export default function RagEvalPage() {
     try {
       setError(null);
       const tables = newCase.expectedTables;
-      const chunkIds = parseIntList(newCase.expectedChunkIds);
+      const chunkIds = newCase.expectedChunkIds;
       await createCase({
         variables: {
           input: {
@@ -226,7 +218,7 @@ export default function RagEvalPage() {
         question: "",
         datasourceId: "",
         expectedTables: [],
-        expectedChunkIds: "",
+        expectedChunkIds: [],
         note: "",
         enabled: true,
       });
@@ -241,7 +233,7 @@ export default function RagEvalPage() {
     try {
       setError(null);
       const tables = editForm.expectedTables;
-      const chunkIds = parseIntList(editForm.expectedChunkIds);
+      const chunkIds = editForm.expectedChunkIds;
       await updateCase({
         variables: {
           input: {
@@ -367,6 +359,7 @@ export default function RagEvalPage() {
                 ...newCase,
                 datasourceId: e.target.value,
                 expectedTables: [],
+                expectedChunkIds: [],
               })
             }
           >
@@ -384,10 +377,10 @@ export default function RagEvalPage() {
             onChange={(expectedTables) => setNewCase({ ...newCase, expectedTables })}
             placeholder="选择期望表（可多选）"
           />
-          <input
-            placeholder="期望 chunk_id（逗号分隔）"
+          <ChunkMultiSelect
+            datasourceId={newCase.datasourceId ? Number(newCase.datasourceId) : null}
             value={newCase.expectedChunkIds}
-            onChange={(e) => setNewCase({ ...newCase, expectedChunkIds: e.target.value })}
+            onChange={(expectedChunkIds) => setNewCase({ ...newCase, expectedChunkIds })}
           />
           <button className="btn" onClick={handleCreate}>
             添加
@@ -424,6 +417,7 @@ export default function RagEvalPage() {
                             ...editForm,
                             datasourceId: e.target.value,
                             expectedTables: [],
+                            expectedChunkIds: [],
                           })
                         }
                       >
@@ -445,12 +439,14 @@ export default function RagEvalPage() {
                         }
                         placeholder="选择期望表（可多选）"
                       />
-                      <input
-                        value={editForm.expectedChunkIds}
-                        onChange={(e) =>
-                          setEditForm({ ...editForm, expectedChunkIds: e.target.value })
+                      <ChunkMultiSelect
+                        datasourceId={
+                          editForm.datasourceId ? Number(editForm.datasourceId) : null
                         }
-                        placeholder="期望 chunk_id"
+                        value={editForm.expectedChunkIds}
+                        onChange={(expectedChunkIds) =>
+                          setEditForm({ ...editForm, expectedChunkIds })
+                        }
                       />
                       <label>
                         <input

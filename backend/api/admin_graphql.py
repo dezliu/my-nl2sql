@@ -3,7 +3,7 @@
 from typing import Optional
 
 import strawberry
-from sqlalchemy import delete, select
+from sqlalchemy import String, cast, delete, or_, select
 
 from backend.db.models import (
     BusinessGlossary,
@@ -15,6 +15,7 @@ from backend.db.models import (
     Message,
     MessageSql,
     RagDocument,
+    RagChunk,
     RagEvalCase,
     RagEvalRun,
     RagEvalRunItem,
@@ -159,6 +160,14 @@ class RagEvalSummaryType:
 class RagEvalImportResultType:
     imported_count: int
     skipped_count: int
+
+
+@strawberry.type
+class RagEvalChunkOptionType:
+    id: int
+    label: str
+    doc_type: str
+    title: str
 
 
 @strawberry.type
@@ -587,6 +596,43 @@ class AdminQueryMixin:
     async def rag_eval_run(self, run_id: int) -> Optional[RagEvalRunType]:
         async with async_session_factory() as session:
             return await _load_rag_eval_run(session, run_id)
+
+    @strawberry.field
+    async def rag_eval_chunks(
+        self,
+        datasource_id: Optional[int] = None,
+        search: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[RagEvalChunkOptionType]:
+        async with async_session_factory() as session:
+            q = (
+                select(RagChunk, RagDocument)
+                .join(RagDocument, RagChunk.document_id == RagDocument.id)
+                .order_by(RagChunk.id.desc())
+                .limit(min(limit, 500))
+            )
+            if datasource_id is not None:
+                q = q.where(RagDocument.datasource_id == datasource_id)
+            if search and search.strip():
+                term = f"%{search.strip()}%"
+                q = q.where(
+                    or_(
+                        RagDocument.title.like(term),
+                        RagChunk.content.like(term),
+                        RagDocument.doc_type.like(term),
+                        cast(RagChunk.id, String).like(term),
+                    )
+                )
+            result = await session.execute(q)
+            return [
+                RagEvalChunkOptionType(
+                    id=chunk.id,
+                    label=f"#{chunk.id} · {doc.doc_type} · {doc.title[:48]}",
+                    doc_type=doc.doc_type,
+                    title=doc.title,
+                )
+                for chunk, doc in result.all()
+            ]
 
     @strawberry.field
     async def scan_datasource_tables(self, datasource_id: int) -> list[ScannedTableType]:
