@@ -4,12 +4,14 @@ import asyncio
 
 from backend.db.models import Datasource, TableMetadata, ColumnMetadata, FkRelationship, SqlTemplate, BusinessGlossary
 from backend.db.prompts import seed_default_prompts
+from backend.db.system_config import seed_default_system_configs
 from backend.db.session import async_session_factory, engine
 
 
 async def seed():
     async with async_session_factory() as session:
         await seed_default_prompts(session)
+        await seed_default_system_configs(session)
 
         ds = Datasource(
             name="Demo DB",

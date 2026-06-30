@@ -11,6 +11,7 @@ const NAV = [
   { href: "/templates", label: "SQL 模板" },
   { href: "/rag-search", label: "向量检索" },
   { href: "/cache", label: "缓存监控" },
+  { href: "/settings", label: "系统设置" },
   { href: "/alerts", label: "RAG 告警" },
 ];
 

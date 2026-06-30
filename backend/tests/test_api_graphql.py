@@ -352,3 +352,23 @@ async def test_graphql_index_datasource(client, seeded_db):
             {"id": ds_id},
         )
         assert data["indexDatasource"] == 3
+
+
+@pytest.mark.asyncio
+async def test_graphql_sql_row_limit(client):
+    data = await gql(client, "{ sqlRowLimit }")
+    assert data["sqlRowLimit"] > 0
+
+    data = await gql(
+        client,
+        """
+        mutation($limit: Int!) {
+          updateSqlRowLimit(limit: $limit)
+        }
+        """,
+        {"limit": 250},
+    )
+    assert data["updateSqlRowLimit"] == 250
+
+    data = await gql(client, "{ sqlRowLimit }")
+    assert data["sqlRowLimit"] == 250

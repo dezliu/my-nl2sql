@@ -94,8 +94,9 @@ class SqlValidator:
         self.allowed_tables = allowed_tables
         self.schema_graph = schema_graph
 
-    def validate(self, sql: str) -> ValidationResult:
+    def validate(self, sql: str, row_limit: int | None = None) -> ValidationResult:
         errors: list[str] = []
+        limit = row_limit if row_limit is not None else settings.default_sql_limit
         try:
             statements = sqlglot.parse(sql, read="mysql")
         except Exception as e:
@@ -114,7 +115,7 @@ class SqlValidator:
                 errors.append(f"Table '{table}' not in whitelist")
 
         if not self._has_limit(stmt):
-            sql = f"{sql.rstrip(';')} LIMIT {settings.default_sql_limit}"
+            sql = f"{sql.rstrip(';')} LIMIT {limit}"
 
         return ValidationResult(valid=len(errors) == 0, sql=sql, errors=errors)
 

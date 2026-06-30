@@ -61,7 +61,7 @@ HARD RULES (violations are rejected):
 2. Use ONLY columns listed in Schema context below
 3. Do NOT invent table names, column names, or JOIN conditions
 4. Retrieved examples are reference only — do NOT import tables from examples if they are not in Schema context
-5. SELECT only, no DDL/DML; always include LIMIT
+5. SELECT only, no DDL/DML. If the query may return more than one row, you MUST append `LIMIT {sql_row_limit}` (always include LIMIT on SELECT that can return multiple rows; use exactly this number)
 6. Use recommended JOIN paths from Schema context when joining tables
 
 If the question CANNOT be answered using only the allowed tables and columns, do NOT guess or hallucinate SQL.
@@ -91,7 +91,7 @@ HARD RULES:
 2. Use ONLY columns in Schema context
 3. Do NOT invent table names, column names, or JOIN conditions
 4. Retrieved examples are reference only — do not copy tables not in Schema context
-5. SELECT only; always include LIMIT
+5. SELECT only. If the query may return more than one row, you MUST append `LIMIT {sql_row_limit}` (always include LIMIT on multi-row SELECT; use exactly this number)
 
 If the question cannot be answered with the allowed tables/columns, state cannot_answer in your final JSON and do NOT output SQL.
 

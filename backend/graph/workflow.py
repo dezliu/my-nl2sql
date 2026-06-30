@@ -15,6 +15,7 @@ from backend.config import settings
 from backend.cache.llm_cache import LlmCache
 from backend.db.models import ColumnMetadata, Datasource, FkRelationship, TableMetadata
 from backend.db.prompts import ROLE_GUARDRAILS, USER_LANGUAGE_POLICY, load_active_prompts
+from backend.db.system_config import get_sql_row_limit
 from backend.llm.client import create_chat_llm
 from backend.rag.retriever import HybridRetriever
 from backend.sql.schema import SchemaGraph, SqlValidator, execute_sql
@@ -66,6 +67,7 @@ class GraphState(TypedDict, total=False):
     sql_llm_cache_role: str
     stream_events: Annotated[list[StreamEvent], lambda a, b: a + b]
     connection_url: str
+    sql_row_limit: int
 
 
 def _get_emitter(state: GraphState) -> Any:
@@ -183,6 +185,7 @@ async def ensure_schema_graph(state: GraphState, session: AsyncSession) -> Schem
 
 async def load_context(state: GraphState, session: AsyncSession) -> GraphState:
     prompts = await load_active_prompts(session)
+    sql_row_limit = await get_sql_row_limit(session)
     schema_graph, allowed_tables, schema_context, connection_url = await build_schema_from_db(
         session, state["datasource_id"]
     )
@@ -196,6 +199,7 @@ async def load_context(state: GraphState, session: AsyncSession) -> GraphState:
         "connection_url": connection_url,
         "allowed_tables": allowed_tables,
         "schema_context": schema_context,
+        "sql_row_limit": sql_row_limit,
         "loop_count": 0,
         "sql_retry_count": 0,
         "rag_chunks": [],
@@ -427,8 +431,9 @@ async def sql_generate(state: GraphState, llm_service=None) -> GraphState:
     role = "react_reasoner" if state.get("deep_think") else "sql_generator"
     chunks_text = "\n---\n".join(c["content"] for c in state.get("rag_chunks", []))
     allowed_tables_str = _format_allowed_tables(state)
+    row_limit = state.get("sql_row_limit", settings.default_sql_limit)
     safety_rules = (
-        "SELECT only; include LIMIT; "
+        f"SELECT only; if the query may return more than one row, MUST include LIMIT {row_limit}; "
         f"whitelist tables: {allowed_tables_str}"
     )
     if state.get("sql_errors"):
@@ -442,6 +447,7 @@ async def sql_generate(state: GraphState, llm_service=None) -> GraphState:
         chunks=chunks_text,
         safety_rules=safety_rules,
         allowed_tables=allowed_tables_str,
+        sql_row_limit=row_limit,
     )
 
     cacheable = False
@@ -536,7 +542,8 @@ def route_after_sql_generate(state: GraphState) -> Literal["sql_safety", "finali
 async def sql_safety(state: GraphState, session: AsyncSession) -> GraphState:
     schema_graph = await ensure_schema_graph(state, session)
     validator = SqlValidator(_allowed_tables_set(state), schema_graph)
-    result = validator.validate(state.get("generated_sql", ""))
+    row_limit = state.get("sql_row_limit", settings.default_sql_limit)
+    result = validator.validate(state.get("generated_sql", ""), row_limit=row_limit)
     next_state: GraphState = {
         **state,
         "generated_sql": result.sql,

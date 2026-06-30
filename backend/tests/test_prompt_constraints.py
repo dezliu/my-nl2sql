@@ -22,10 +22,13 @@ def test_sql_generator_prompt_includes_allowed_tables():
         question="近7天销售额",
         schema_context="## Schema Context\n### Table: users",
         chunks="",
-        safety_rules="SELECT only; include LIMIT",
+        safety_rules="SELECT only; MUST include LIMIT 500",
         allowed_tables="orders, users",
+        sql_row_limit=500,
     )
     assert "orders, users" in prompt
+    assert "LIMIT {sql_row_limit}" not in prompt
+    assert "LIMIT 500" in prompt
     assert "cannot_answer" in prompt
     assert "Do NOT invent" in prompt
 
@@ -67,6 +70,7 @@ async def test_sql_generate_cannot_answer_emits_summary():
         "allowed_tables": {"users", "orders"},
         "schema_context": "## Table: users",
         "system_prompts": {"sql_generator": DEFAULT_PROMPTS[PromptRole.SQL_GENERATOR.value]},
+        "sql_row_limit": 200,
         "rag_chunks": [],
         "deep_think": False,
     }
@@ -95,6 +99,7 @@ async def test_sql_generate_defers_cache_until_validation():
         "allowed_tables": {"users"},
         "schema_context": "## Table: users",
         "system_prompts": {"sql_generator": DEFAULT_PROMPTS[PromptRole.SQL_GENERATOR.value]},
+        "sql_row_limit": 200,
         "rag_chunks": [],
         "deep_think": False,
     }

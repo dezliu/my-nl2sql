@@ -27,6 +27,13 @@ def test_validate_select_only(schema_graph):
     assert "LIMIT" in result.sql.upper()
 
 
+def test_validate_uses_custom_row_limit(schema_graph):
+    validator = SqlValidator(schema_graph.allowed_tables, schema_graph)
+    result = validator.validate("SELECT * FROM users", row_limit=50)
+    assert result.valid
+    assert result.sql.upper().endswith("LIMIT 50")
+
+
 def test_reject_non_select(schema_graph):
     validator = SqlValidator(schema_graph.allowed_tables, schema_graph)
     result = validator.validate("DELETE FROM users")

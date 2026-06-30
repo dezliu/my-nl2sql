@@ -20,6 +20,7 @@ from backend.db.models import (
     TemplateRecommendation,
 )
 from backend.db.session import async_session_factory
+from backend.db.system_config import get_sql_row_limit, set_sql_row_limit
 from backend.rag.index_ops import index_item as do_index_item, unindex_item as do_unindex_item
 from backend.rag.indexer import IndexPipeline
 from backend.rag.retriever import HybridRetriever
@@ -445,6 +446,12 @@ class AdminQueryMixin:
             ]
 
 
+    @strawberry.field
+    async def sql_row_limit(self) -> int:
+        async with async_session_factory() as session:
+            return await get_sql_row_limit(session)
+
+
 async def _purge_datasource_rag(
     session, pipeline: IndexPipeline, datasource_id: int
 ) -> None:
@@ -504,6 +511,15 @@ async def delete_datasource_cascade(session, datasource_id: int) -> bool:
 
 @strawberry.type
 class AdminMutationMixin:
+    @strawberry.mutation
+    async def update_sql_row_limit(self, limit: int) -> int:
+        async with async_session_factory() as session:
+            try:
+                await set_sql_row_limit(session, limit)
+            except ValueError as e:
+                raise ValueError(str(e)) from e
+            return limit
+
     @strawberry.mutation
     async def sync_datasource_metadata(
         self, input: SyncDatasourceMetadataInput
