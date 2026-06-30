@@ -183,3 +183,69 @@ textarea { min-height: 200px; font-family: monospace; }
   color: #9ca3af;
   margin-bottom: 0.5rem;
 }
+
+.table-multi-select {
+  position: relative;
+  flex: 1;
+  min-width: 180px;
+}
+
+.table-multi-select-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  color: #e5e7eb;
+  cursor: pointer;
+  text-align: left;
+}
+
+.table-multi-select-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-multi-select-caret {
+  color: #9ca3af;
+  font-size: 0.7rem;
+}
+
+.table-multi-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 220px;
+  overflow-y: auto;
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  padding: 0.5rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.table-multi-select-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.25rem;
+  cursor: pointer;
+}
+
+.table-multi-select-item:hover {
+  background: #1f2937;
+  border-radius: 4px;
+}
+
+.table-multi-select-empty {
+  padding: 0.5rem;
+  color: #9ca3af;
+  font-size: 0.875rem;
+}

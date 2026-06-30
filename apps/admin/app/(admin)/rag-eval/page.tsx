@@ -4,6 +4,7 @@ import { gql, useLazyQuery, useMutation, useQuery } from "@apollo/client";
 import { useState } from "react";
 
 import { AdminErrorBanner } from "../../../components/AdminErrorBanner";
+import { TableMultiSelect } from "../../../components/TableMultiSelect";
 import { formatMutationError } from "../../../lib/mutation-error";
 
 const DATASOURCES = gql`
@@ -137,13 +138,6 @@ type EvalRunSummary = {
   createdAt: string;
 };
 
-function parseCsvList(value: string): string[] {
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 function parseIntList(value: string): number[] {
   return value
     .split(",")
@@ -167,7 +161,7 @@ export default function RagEvalPage() {
   const [newCase, setNewCase] = useState({
     question: "",
     datasourceId: "" as string | number,
-    expectedTables: "",
+    expectedTables: [] as string[],
     expectedChunkIds: "",
     note: "",
     enabled: true,
@@ -175,7 +169,7 @@ export default function RagEvalPage() {
   const [editForm, setEditForm] = useState({
     question: "",
     datasourceId: "" as string | number,
-    expectedTables: "",
+    expectedTables: [] as string[],
     expectedChunkIds: "",
     note: "",
     enabled: true,
@@ -203,7 +197,7 @@ export default function RagEvalPage() {
     setEditForm({
       question: c.question,
       datasourceId: c.datasourceId ?? "",
-      expectedTables: (c.expectedTables || []).join(", "),
+      expectedTables: c.expectedTables || [],
       expectedChunkIds: (c.expectedChunkIds || []).join(", "),
       note: c.note || "",
       enabled: c.enabled,
@@ -214,7 +208,7 @@ export default function RagEvalPage() {
     if (!newCase.question.trim()) return;
     try {
       setError(null);
-      const tables = parseCsvList(newCase.expectedTables);
+      const tables = newCase.expectedTables;
       const chunkIds = parseIntList(newCase.expectedChunkIds);
       await createCase({
         variables: {
@@ -231,7 +225,7 @@ export default function RagEvalPage() {
       setNewCase({
         question: "",
         datasourceId: "",
-        expectedTables: "",
+        expectedTables: [],
         expectedChunkIds: "",
         note: "",
         enabled: true,
@@ -246,7 +240,7 @@ export default function RagEvalPage() {
     if (editingId == null) return;
     try {
       setError(null);
-      const tables = parseCsvList(editForm.expectedTables);
+      const tables = editForm.expectedTables;
       const chunkIds = parseIntList(editForm.expectedChunkIds);
       await updateCase({
         variables: {
@@ -368,7 +362,13 @@ export default function RagEvalPage() {
         <div className="form-row">
           <select
             value={newCase.datasourceId}
-            onChange={(e) => setNewCase({ ...newCase, datasourceId: e.target.value })}
+            onChange={(e) =>
+              setNewCase({
+                ...newCase,
+                datasourceId: e.target.value,
+                expectedTables: [],
+              })
+            }
           >
             <option value="">全部数据源</option>
             {datasources.map((ds: { id: number; name: string }) => (
@@ -377,10 +377,12 @@ export default function RagEvalPage() {
               </option>
             ))}
           </select>
-          <input
-            placeholder="期望表名（逗号分隔）"
+          <TableMultiSelect
+            datasourceId={newCase.datasourceId ? Number(newCase.datasourceId) : null}
+            datasources={datasources}
             value={newCase.expectedTables}
-            onChange={(e) => setNewCase({ ...newCase, expectedTables: e.target.value })}
+            onChange={(expectedTables) => setNewCase({ ...newCase, expectedTables })}
+            placeholder="选择期望表（可多选）"
           />
           <input
             placeholder="期望 chunk_id（逗号分隔）"
@@ -418,7 +420,11 @@ export default function RagEvalPage() {
                       <select
                         value={editForm.datasourceId}
                         onChange={(e) =>
-                          setEditForm({ ...editForm, datasourceId: e.target.value })
+                          setEditForm({
+                            ...editForm,
+                            datasourceId: e.target.value,
+                            expectedTables: [],
+                          })
                         }
                       >
                         <option value="">全部数据源</option>
@@ -428,12 +434,16 @@ export default function RagEvalPage() {
                           </option>
                         ))}
                       </select>
-                      <input
-                        value={editForm.expectedTables}
-                        onChange={(e) =>
-                          setEditForm({ ...editForm, expectedTables: e.target.value })
+                      <TableMultiSelect
+                        datasourceId={
+                          editForm.datasourceId ? Number(editForm.datasourceId) : null
                         }
-                        placeholder="期望表名"
+                        datasources={datasources}
+                        value={editForm.expectedTables}
+                        onChange={(expectedTables) =>
+                          setEditForm({ ...editForm, expectedTables })
+                        }
+                        placeholder="选择期望表（可多选）"
                       />
                       <input
                         value={editForm.expectedChunkIds}
