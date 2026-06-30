@@ -343,3 +343,49 @@ class LlmCacheHitLog(Base):
     similarity: Mapped[Optional[float]] = mapped_column(Float)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class RagEvalCase(Base):
+    __tablename__ = "rag_eval_cases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    datasource_id: Mapped[Optional[int]] = mapped_column(ForeignKey("datasources.id"))
+    expected_chunk_ids: Mapped[Optional[list]] = mapped_column(JSON)
+    expected_tables: Mapped[Optional[list]] = mapped_column(JSON)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class RagEvalRun(Base):
+    __tablename__ = "rag_eval_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    top_k: Mapped[int] = mapped_column(Integer, nullable=False)
+    datasource_id: Mapped[Optional[int]] = mapped_column(ForeignKey("datasources.id"))
+    case_count: Mapped[int] = mapped_column(Integer, default=0)
+    recall_at_k: Mapped[Optional[float]] = mapped_column(Float)
+    mrr: Mapped[Optional[float]] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(32), default="running")
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    items: Mapped[list["RagEvalRunItem"]] = relationship(back_populates="run")
+
+
+class RagEvalRunItem(Base):
+    __tablename__ = "rag_eval_run_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("rag_eval_runs.id"), nullable=False)
+    case_id: Mapped[int] = mapped_column(ForeignKey("rag_eval_cases.id"), nullable=False)
+    recall: Mapped[float] = mapped_column(Float, nullable=False)
+    mrr: Mapped[float] = mapped_column(Float, nullable=False)
+    match_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    retrieved_chunk_ids: Mapped[Optional[list]] = mapped_column(JSON)
+    hit_chunk_ids: Mapped[Optional[list]] = mapped_column(JSON)
+    skipped: Mapped[bool] = mapped_column(Boolean, default=False)
+    skip_reason: Mapped[Optional[str]] = mapped_column(Text)
+
+    run: Mapped["RagEvalRun"] = relationship(back_populates="items")

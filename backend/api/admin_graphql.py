@@ -15,12 +15,16 @@ from backend.db.models import (
     Message,
     MessageSql,
     RagDocument,
+    RagEvalCase,
+    RagEvalRun,
+    RagEvalRunItem,
     SqlTemplate,
     TableMetadata,
     TemplateRecommendation,
 )
 from backend.db.session import async_session_factory
 from backend.db.system_config import get_sql_row_limit, set_sql_row_limit
+from backend.eval.rag_eval import DEFAULT_BENCHMARK_PATH, import_cases_from_json, run_rag_eval
 from backend.rag.index_ops import index_item as do_index_item, unindex_item as do_unindex_item
 from backend.rag.indexer import IndexPipeline
 from backend.rag.retriever import HybridRetriever
@@ -100,6 +104,61 @@ class RagSearchResultType:
     content: str
     score: float
     doc_type: str
+
+
+@strawberry.type
+class RagEvalCaseType:
+    id: int
+    question: str
+    datasource_id: Optional[int]
+    expected_chunk_ids: Optional[list[int]]
+    expected_tables: Optional[list[str]]
+    enabled: bool
+    note: Optional[str]
+
+
+@strawberry.type
+class RagEvalRunItemType:
+    id: int
+    case_id: int
+    question: str
+    recall: float
+    mrr: float
+    match_mode: str
+    retrieved_chunk_ids: list[str]
+    hit_chunk_ids: list[str]
+    skipped: bool
+    skip_reason: Optional[str]
+
+
+@strawberry.type
+class RagEvalRunType:
+    id: int
+    top_k: int
+    datasource_id: Optional[int]
+    case_count: int
+    recall_at_k: Optional[float]
+    mrr: Optional[float]
+    status: str
+    error_message: Optional[str]
+    created_at: str
+    items: list[RagEvalRunItemType]
+
+
+@strawberry.type
+class RagEvalSummaryType:
+    run_id: int
+    case_count: int
+    evaluated_count: int
+    skipped_count: int
+    recall_at_k: float
+    mrr: float
+
+
+@strawberry.type
+class RagEvalImportResultType:
+    imported_count: int
+    skipped_count: int
 
 
 @strawberry.type
@@ -251,6 +310,90 @@ class UpdateTemplateInput:
 class IndexItemInput:
     doc_type: str
     source_id: int
+
+
+@strawberry.input
+class CreateRagEvalCaseInput:
+    question: str
+    datasource_id: Optional[int] = None
+    expected_chunk_ids: Optional[list[int]] = None
+    expected_tables: Optional[list[str]] = None
+    enabled: bool = True
+    note: Optional[str] = None
+
+
+@strawberry.input
+class UpdateRagEvalCaseInput:
+    id: int
+    question: Optional[str] = None
+    datasource_id: Optional[int] = None
+    expected_chunk_ids: Optional[list[int]] = None
+    expected_tables: Optional[list[str]] = None
+    enabled: Optional[bool] = None
+    note: Optional[str] = None
+
+
+def _rag_eval_case_type(case: RagEvalCase) -> RagEvalCaseType:
+    chunk_ids = case.expected_chunk_ids
+    if chunk_ids is not None:
+        chunk_ids = [int(cid) for cid in chunk_ids]
+    tables = case.expected_tables
+    if tables is not None:
+        tables = [str(t) for t in tables]
+    return RagEvalCaseType(
+        id=case.id,
+        question=case.question,
+        datasource_id=case.datasource_id,
+        expected_chunk_ids=chunk_ids,
+        expected_tables=tables,
+        enabled=case.enabled,
+        note=case.note,
+    )
+
+
+async def _load_rag_eval_run(
+    session, run_id: int, *, include_items: bool = True
+) -> Optional[RagEvalRunType]:
+    run = await session.get(RagEvalRun, run_id)
+    if not run:
+        return None
+
+    items: list[RagEvalRunItemType] = []
+    if include_items:
+        items_result = await session.execute(
+            select(RagEvalRunItem, RagEvalCase)
+            .join(RagEvalCase, RagEvalRunItem.case_id == RagEvalCase.id)
+            .where(RagEvalRunItem.run_id == run_id)
+            .order_by(RagEvalRunItem.id)
+        )
+        items = [
+            RagEvalRunItemType(
+                id=item.id,
+                case_id=item.case_id,
+                question=case.question,
+                recall=item.recall,
+                mrr=item.mrr,
+                match_mode=item.match_mode,
+                retrieved_chunk_ids=[str(cid) for cid in (item.retrieved_chunk_ids or [])],
+                hit_chunk_ids=[str(cid) for cid in (item.hit_chunk_ids or [])],
+                skipped=item.skipped,
+                skip_reason=item.skip_reason,
+            )
+            for item, case in items_result.all()
+        ]
+    created = run.created_at.isoformat() if run.created_at else ""
+    return RagEvalRunType(
+        id=run.id,
+        top_k=run.top_k,
+        datasource_id=run.datasource_id,
+        case_count=run.case_count,
+        recall_at_k=run.recall_at_k,
+        mrr=run.mrr,
+        status=run.status,
+        error_message=run.error_message,
+        created_at=created,
+        items=items,
+    )
 
 
 @strawberry.type
@@ -417,6 +560,33 @@ class AdminQueryMixin:
             )
             for r in results
         ]
+
+    @strawberry.field
+    async def rag_eval_cases(self, enabled: Optional[bool] = None) -> list[RagEvalCaseType]:
+        async with async_session_factory() as session:
+            q = select(RagEvalCase).order_by(RagEvalCase.id)
+            if enabled is not None:
+                q = q.where(RagEvalCase.enabled == enabled)
+            result = await session.execute(q)
+            return [_rag_eval_case_type(c) for c in result.scalars().all()]
+
+    @strawberry.field
+    async def rag_eval_runs(self, limit: int = 20) -> list[RagEvalRunType]:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(RagEvalRun).order_by(RagEvalRun.id.desc()).limit(limit)
+            )
+            runs = []
+            for run in result.scalars().all():
+                loaded = await _load_rag_eval_run(session, run.id, include_items=False)
+                if loaded:
+                    runs.append(loaded)
+            return runs
+
+    @strawberry.field
+    async def rag_eval_run(self, run_id: int) -> Optional[RagEvalRunType]:
+        async with async_session_factory() as session:
+            return await _load_rag_eval_run(session, run_id)
 
     @strawberry.field
     async def scan_datasource_tables(self, datasource_id: int) -> list[ScannedTableType]:
@@ -918,3 +1088,80 @@ class AdminMutationMixin:
     async def unindex_item(self, input: IndexItemInput) -> bool:
         async with async_session_factory() as session:
             return await do_unindex_item(session, input.doc_type, input.source_id)
+
+    @strawberry.mutation
+    async def create_rag_eval_case(self, input: CreateRagEvalCaseInput) -> RagEvalCaseType:
+        async with async_session_factory() as session:
+            case = RagEvalCase(
+                question=input.question,
+                datasource_id=input.datasource_id,
+                expected_chunk_ids=input.expected_chunk_ids,
+                expected_tables=input.expected_tables,
+                enabled=input.enabled,
+                note=input.note,
+            )
+            session.add(case)
+            await session.commit()
+            await session.refresh(case)
+            return _rag_eval_case_type(case)
+
+    @strawberry.mutation
+    async def update_rag_eval_case(self, input: UpdateRagEvalCaseInput) -> Optional[RagEvalCaseType]:
+        async with async_session_factory() as session:
+            case = await session.get(RagEvalCase, input.id)
+            if not case:
+                return None
+            if input.question is not None:
+                case.question = input.question
+            if input.datasource_id is not None:
+                case.datasource_id = input.datasource_id
+            if input.expected_chunk_ids is not None:
+                case.expected_chunk_ids = input.expected_chunk_ids
+            if input.expected_tables is not None:
+                case.expected_tables = input.expected_tables
+            if input.enabled is not None:
+                case.enabled = input.enabled
+            if input.note is not None:
+                case.note = input.note
+            await session.commit()
+            await session.refresh(case)
+            return _rag_eval_case_type(case)
+
+    @strawberry.mutation
+    async def delete_rag_eval_case(self, case_id: int) -> bool:
+        async with async_session_factory() as session:
+            case = await session.get(RagEvalCase, case_id)
+            if not case:
+                return False
+            await session.delete(case)
+            await session.commit()
+            return True
+
+    @strawberry.mutation
+    async def import_rag_eval_benchmark(self) -> RagEvalImportResultType:
+        async with async_session_factory() as session:
+            imported, skipped = await import_cases_from_json(session, DEFAULT_BENCHMARK_PATH)
+            return RagEvalImportResultType(imported_count=imported, skipped_count=skipped)
+
+    @strawberry.mutation
+    async def run_rag_eval(
+        self,
+        top_k: int,
+        datasource_id: Optional[int] = None,
+        case_ids: Optional[list[int]] = None,
+    ) -> RagEvalSummaryType:
+        async with async_session_factory() as session:
+            summary = await run_rag_eval(
+                session,
+                top_k=top_k,
+                datasource_id=datasource_id,
+                case_ids=case_ids,
+            )
+            return RagEvalSummaryType(
+                run_id=summary.run_id,
+                case_count=summary.case_count,
+                evaluated_count=summary.evaluated_count,
+                skipped_count=summary.skipped_count,
+                recall_at_k=summary.recall_at_k,
+                mrr=summary.mrr,
+            )

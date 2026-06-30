@@ -1,0 +1,75 @@
+[
+  {
+    "question": "用户表有哪些字段",
+    "expected_tables": ["users"],
+    "note": "应检索 users 表元数据"
+  },
+  {
+    "question": "users 表的列信息",
+    "expected_tables": ["users"]
+  },
+  {
+    "question": "订单表结构是什么",
+    "expected_tables": ["orders"]
+  },
+  {
+    "question": "orders 表包含哪些列",
+    "expected_tables": ["orders"]
+  },
+  {
+    "question": "用户表是做什么的",
+    "expected_tables": ["users"]
+  },
+  {
+    "question": "订单金额字段在哪个表",
+    "expected_tables": ["orders"]
+  },
+  {
+    "question": "username 字段属于哪张表",
+    "expected_tables": ["users"]
+  },
+  {
+    "question": "user_id 外键在哪张表",
+    "expected_tables": ["orders"]
+  },
+  {
+    "question": "订单和用户怎么关联",
+    "expected_tables": ["orders", "users"]
+  },
+  {
+    "question": "查询每个用户的订单总数需要什么表",
+    "expected_tables": ["users", "orders"]
+  },
+  {
+    "question": "用户和订单之间的外键关系",
+    "expected_tables": ["orders", "users"]
+  },
+  {
+    "question": "哪些表有用户相关信息",
+    "expected_tables": ["users"]
+  },
+  {
+    "question": "统计订单金额需要哪些表",
+    "expected_tables": ["orders"]
+  },
+  {
+    "question": "用户 ID 字段定义",
+    "expected_tables": ["users"]
+  },
+  {
+    "question": "订单 ID 和金额字段",
+    "expected_tables": ["orders"]
+  },
+  {
+    "question": "数据库里有哪些业务表",
+    "expected_tables": ["users", "orders"]
+  },
+  {
+    "question": "用户名字段的数据类型",
+    "expected_tables": ["users"]
+  },
+  {
+    "question": "orders 表和 users 表如何 join",
+    "expected_tables": ["orders", "users"]
+  }
+]

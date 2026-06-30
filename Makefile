@@ -6,7 +6,7 @@ UVICORN := $(VENV)/bin/uvicorn
 ALEMBIC := $(VENV)/bin/alembic
 PYTEST := $(VENV)/bin/pytest
 
-.PHONY: up down migrate seed upgrade-prompts api worker web admin test install
+.PHONY: up down migrate seed upgrade-prompts api worker web admin test install eval-rag
 
 up:
 	docker compose up -d
@@ -37,6 +37,9 @@ admin:
 
 test:
 	$(PYTEST) backend/tests -q
+
+eval-rag:
+	$(PY) -m backend.scripts.eval_rag --import-benchmark
 
 install:
 	$(PIP) install -e ".[dev]"

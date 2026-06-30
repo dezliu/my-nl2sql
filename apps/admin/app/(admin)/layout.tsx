@@ -10,6 +10,7 @@ const NAV = [
   { href: "/business", label: "业务数据" },
   { href: "/templates", label: "SQL 模板" },
   { href: "/rag-search", label: "向量检索" },
+  { href: "/rag-eval", label: "离线评估" },
   { href: "/cache", label: "缓存监控" },
   { href: "/settings", label: "系统设置" },
   { href: "/alerts", label: "RAG 告警" },

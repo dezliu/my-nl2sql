@@ -6,6 +6,7 @@ from backend.db.models import Datasource, TableMetadata, ColumnMetadata, FkRelat
 from backend.db.prompts import seed_default_prompts
 from backend.db.system_config import seed_default_system_configs
 from backend.db.session import async_session_factory, engine
+from backend.eval.rag_eval import import_cases_from_json
 
 
 async def seed():
@@ -55,7 +56,9 @@ async def seed():
         ))
 
         await session.commit()
+        imported, skipped = await import_cases_from_json(session)
         print(f"Seeded datasource id={ds.id}")
+        print(f"RAG eval benchmark: imported {imported}, skipped {skipped}")
 
 
 async def main() -> None:
