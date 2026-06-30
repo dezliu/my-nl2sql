@@ -4,7 +4,7 @@ import asyncio
 
 from backend.db.models import Datasource, TableMetadata, ColumnMetadata, FkRelationship, SqlTemplate, BusinessGlossary
 from backend.db.prompts import seed_default_prompts
-from backend.db.session import async_session_factory
+from backend.db.session import async_session_factory, engine
 
 
 async def seed():
@@ -13,7 +13,7 @@ async def seed():
 
         ds = Datasource(
             name="Demo DB",
-            connection_url="mysql://nl2sql:nl2sql@localhost:3306/nl2sql",
+            connection_url="mysql://nl2sql:nl2sql@localhost:3307/nl2sql",
             is_active=True,
         )
         session.add(ds)
@@ -56,5 +56,10 @@ async def seed():
         print(f"Seeded datasource id={ds.id}")
 
 
+async def main() -> None:
+    await seed()
+    await engine.dispose()
+
+
 if __name__ == "__main__":
-    asyncio.run(seed())
+    asyncio.run(main())

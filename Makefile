@@ -1,4 +1,12 @@
-.PHONY: up down migrate seed api worker web admin test
+VENV ?= .venv
+PY := $(VENV)/bin/python
+PIP := $(VENV)/bin/pip
+CELERY := $(VENV)/bin/celery
+UVICORN := $(VENV)/bin/uvicorn
+ALEMBIC := $(VENV)/bin/alembic
+PYTEST := $(VENV)/bin/pytest
+
+.PHONY: up down migrate seed api worker web admin test install
 
 up:
 	docker compose up -d
@@ -7,16 +15,16 @@ down:
 	docker compose down
 
 migrate:
-	alembic upgrade head
+	$(ALEMBIC) upgrade head
 
 seed:
-	python -m backend.scripts.seed
+	$(PY) -m backend.scripts.seed
 
 api:
-	uvicorn backend.api.main:app --reload --port 8000
+	$(UVICORN) backend.api.main:app --reload --port 8000
 
 worker:
-	celery -A backend.workers.tasks worker --loglevel=info
+	$(CELERY) -A backend.workers.tasks worker --loglevel=info
 
 web:
 	npm run dev:web
@@ -25,8 +33,8 @@ admin:
 	npm run dev:admin
 
 test:
-	pytest backend/tests -q
+	$(PYTEST) backend/tests -q
 
 install:
-	pip install -e ".[dev]"
+	$(PIP) install -e ".[dev]"
 	npm install

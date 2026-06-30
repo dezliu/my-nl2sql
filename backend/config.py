@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    database_url: str = "mysql+aiomysql://nl2sql:nl2sql@localhost:3306/nl2sql"
+    database_url: str = "mysql+aiomysql://nl2sql:nl2sql@localhost:3307/nl2sql"
     redis_url: str = "redis://localhost:6379/0"
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "nl2sql_rag"

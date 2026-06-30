@@ -50,7 +50,7 @@ celery -A backend.workers.tasks worker --loglevel=info
 
 ```bash
 cd apps/web && npm install && npm run dev
-cd apps/admin && npm install && npm run dev -p 3001
+cd apps/admin && npm install && npm run dev
 ```
 
 ## Architecture
@@ -68,5 +68,5 @@ cd apps/admin && npm install && npm run dev -p 3001
 
 ## User Apps
 
-- User UI: http://localhost:3000
-- Admin UI: http://localhost:3001
+- User UI: http://localhost:4000
+- Admin UI: http://localhost:4001
