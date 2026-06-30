@@ -41,6 +41,12 @@ class LlmCache:
         )
         return hashlib.sha256(normalized.encode()).hexdigest()
 
+    @staticmethod
+    def _semantic_text(role: str, semantic_key: str | None, prompt: str) -> str:
+        if semantic_key:
+            return semantic_key.strip()
+        return prompt
+
     async def get(
         self,
         role: str,
@@ -48,6 +54,7 @@ class LlmCache:
         prompt: str,
         params: dict | None = None,
         session_id: str | None = None,
+        semantic_key: str | None = None,
     ) -> CacheResult:
         start = time.monotonic()
         cache_key = self._hash_key(role, model, prompt, params)
@@ -67,7 +74,9 @@ class LlmCache:
                 cache_entry_id=entry.id,
             )
 
-        semantic = await self._semantic_lookup(role, model, prompt)
+        semantic = await self._semantic_lookup(
+            role, model, self._semantic_text(role, semantic_key, prompt)
+        )
         if semantic.hit:
             latency = int((time.monotonic() - start) * 1000)
             await self._log_hit(
@@ -80,8 +89,8 @@ class LlmCache:
             )
         return semantic
 
-    async def _semantic_lookup(self, role: str, model: str, prompt: str) -> CacheResult:
-        query_vec = self._retriever._embed_dense(prompt)
+    async def _semantic_lookup(self, role: str, model: str, semantic_text: str) -> CacheResult:
+        query_vec = self._retriever._embed_dense(semantic_text)
         result = await self.session.execute(
             select(LlmCacheEntry).where(
                 LlmCacheEntry.role == role,
@@ -120,11 +129,14 @@ class LlmCache:
         params: dict | None = None,
         prompt_version: int | None = None,
         cacheable: bool = True,
+        semantic_key: str | None = None,
     ) -> None:
         if not cacheable:
             return
         cache_key = self._hash_key(role, model, prompt, params)
-        embedding = self._retriever._embed_dense(prompt)
+        embedding = self._retriever._embed_dense(
+            self._semantic_text(role, semantic_key, prompt)
+        )
         entry = LlmCacheEntry(
             cache_key_hash=cache_key,
             prompt_hash=hashlib.sha256(prompt.encode()).hexdigest(),

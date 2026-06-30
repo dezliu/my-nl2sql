@@ -3,20 +3,32 @@
 from typing import Optional
 
 import strawberry
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from backend.db.models import (
     BusinessGlossary,
     ColumnMetadata,
+    Conversation,
+    Datasource,
     FkRelationship,
     KnowledgeEntry,
+    Message,
+    MessageSql,
+    RagDocument,
     SqlTemplate,
     TableMetadata,
     TemplateRecommendation,
 )
 from backend.db.session import async_session_factory
 from backend.rag.index_ops import index_item as do_index_item, unindex_item as do_unindex_item
+from backend.rag.indexer import IndexPipeline
 from backend.rag.retriever import HybridRetriever
+from backend.services.metadata_sync import (
+    SyncMetadataOptions,
+    SyncTableItem,
+    scan_datasource_tables,
+    sync_datasource_metadata,
+)
 from backend.services.template_recommender import approve_recommendation, reject_recommendation
 
 
@@ -87,6 +99,51 @@ class RagSearchResultType:
     content: str
     score: float
     doc_type: str
+
+
+@strawberry.type
+class ScannedColumnType:
+    column_name: str
+    data_type: str
+    description: Optional[str]
+    is_nullable: bool
+
+
+@strawberry.type
+class ScannedTableType:
+    table_name: str
+    table_comment: Optional[str]
+    column_count: int
+    already_exists: bool
+    existing_table_id: Optional[int]
+    columns: list[ScannedColumnType]
+
+
+@strawberry.type
+class SyncResultType:
+    tables_added: int
+    tables_updated: int
+    columns_added: int
+    columns_updated: int
+    fks_synced: int
+    indexed_count: int
+    orphan_columns: list[str]
+    errors: list[str]
+
+
+@strawberry.input
+class SyncTableItemInput:
+    table_name: str
+    description: Optional[str] = None
+    is_allowed: bool = True
+
+
+@strawberry.input
+class SyncDatasourceMetadataInput:
+    datasource_id: int
+    tables: list[SyncTableItemInput]
+    sync_fks: bool = True
+    index_to_rag: bool = False
 
 
 @strawberry.type
@@ -360,9 +417,152 @@ class AdminQueryMixin:
             for r in results
         ]
 
+    @strawberry.field
+    async def scan_datasource_tables(self, datasource_id: int) -> list[ScannedTableType]:
+        async with async_session_factory() as session:
+            ds = await session.get(Datasource, datasource_id)
+            if not ds:
+                return []
+            rows = await scan_datasource_tables(session, datasource_id, ds.connection_url)
+            return [
+                ScannedTableType(
+                    table_name=table.table_name,
+                    table_comment=table.table_comment,
+                    column_count=len(table.columns),
+                    already_exists=exists,
+                    existing_table_id=existing_id,
+                    columns=[
+                        ScannedColumnType(
+                            column_name=c.column_name,
+                            data_type=c.data_type,
+                            description=c.description,
+                            is_nullable=c.is_nullable,
+                        )
+                        for c in table.columns
+                    ],
+                )
+                for table, exists, existing_id in rows
+            ]
+
+
+async def _purge_datasource_rag(
+    session, pipeline: IndexPipeline, datasource_id: int
+) -> None:
+    result = await session.execute(
+        select(RagDocument).where(RagDocument.datasource_id == datasource_id)
+    )
+    for doc in result.scalars().all():
+        if doc.source_id:
+            await pipeline.unindex_by_source(doc.doc_type, doc.source_id)
+
+
+async def delete_datasource_cascade(session, datasource_id: int) -> bool:
+    ds = await session.get(Datasource, datasource_id)
+    if not ds:
+        return False
+
+    pipeline = IndexPipeline(session)
+    await _purge_datasource_rag(session, pipeline, datasource_id)
+
+    await session.execute(
+        delete(TemplateRecommendation).where(
+            TemplateRecommendation.datasource_id == datasource_id
+        )
+    )
+
+    conv_result = await session.execute(
+        select(Conversation).where(Conversation.datasource_id == datasource_id)
+    )
+    for conv in conv_result.scalars().all():
+        msg_result = await session.execute(
+            select(Message).where(Message.conversation_id == conv.id)
+        )
+        for msg in msg_result.scalars().all():
+            await session.execute(delete(MessageSql).where(MessageSql.message_id == msg.id))
+            await session.delete(msg)
+        await session.delete(conv)
+
+    await session.execute(
+        delete(FkRelationship).where(FkRelationship.datasource_id == datasource_id)
+    )
+
+    table_result = await session.execute(
+        select(TableMetadata).where(TableMetadata.datasource_id == datasource_id)
+    )
+    for table in table_result.scalars().all():
+        await session.execute(delete(ColumnMetadata).where(ColumnMetadata.table_id == table.id))
+        await session.delete(table)
+
+    await session.execute(delete(SqlTemplate).where(SqlTemplate.datasource_id == datasource_id))
+    await session.execute(
+        delete(KnowledgeEntry).where(KnowledgeEntry.datasource_id == datasource_id)
+    )
+
+    await session.delete(ds)
+    return True
+
 
 @strawberry.type
 class AdminMutationMixin:
+    @strawberry.mutation
+    async def sync_datasource_metadata(
+        self, input: SyncDatasourceMetadataInput
+    ) -> SyncResultType:
+        async with async_session_factory() as session:
+            ds = await session.get(Datasource, input.datasource_id)
+            if not ds:
+                return SyncResultType(
+                    tables_added=0,
+                    tables_updated=0,
+                    columns_added=0,
+                    columns_updated=0,
+                    fks_synced=0,
+                    indexed_count=0,
+                    orphan_columns=[],
+                    errors=["数据源不存在"],
+                )
+            items = [
+                SyncTableItem(
+                    table_name=t.table_name,
+                    description=t.description,
+                    is_allowed=t.is_allowed,
+                )
+                for t in input.tables
+            ]
+            options = SyncMetadataOptions(
+                sync_fks=input.sync_fks,
+                index_to_rag=input.index_to_rag,
+            )
+            try:
+                result = await sync_datasource_metadata(
+                    session,
+                    input.datasource_id,
+                    ds.connection_url,
+                    items,
+                    options,
+                )
+            except ValueError as e:
+                return SyncResultType(
+                    tables_added=0,
+                    tables_updated=0,
+                    columns_added=0,
+                    columns_updated=0,
+                    fks_synced=0,
+                    indexed_count=0,
+                    orphan_columns=[],
+                    errors=[str(e)],
+                )
+            return SyncResultType(
+                tables_added=result.tables_added,
+                tables_updated=result.tables_updated,
+                columns_added=result.columns_added,
+                columns_updated=result.columns_updated,
+                fks_synced=result.fks_synced,
+                indexed_count=result.indexed_count,
+                orphan_columns=result.orphan_columns,
+                errors=result.errors,
+            )
+
     @strawberry.mutation
     async def create_table(self, input: CreateTableInput) -> TableMetadataDetailType:
         async with async_session_factory() as session:

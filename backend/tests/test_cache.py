@@ -7,7 +7,16 @@ from backend.cache.llm_cache import LlmCache, _cosine_similarity
 from backend.rag.retriever import HybridRetriever
 
 
-def test_hash_key_deterministic():
+def test_semantic_text_uses_question_not_full_prompt():
+    prompt = "System template with schema...\nQuestion: 多少用户"
+    semantic = LlmCache._semantic_text("sql_generator", "多少用户", prompt)
+    assert semantic == "多少用户"
+    assert semantic != prompt
+
+
+def test_semantic_text_falls_back_to_prompt():
+    prompt = "only prompt"
+    assert LlmCache._semantic_text("sql_generator", None, prompt) == prompt
     k1 = LlmCache._hash_key("sql_generator", "gpt-4o-mini", "hello", {"a": 1})
     k2 = LlmCache._hash_key("sql_generator", "gpt-4o-mini", "hello", {"a": 1})
     k3 = LlmCache._hash_key("sql_generator", "gpt-4o-mini", "hello", {"a": 2})

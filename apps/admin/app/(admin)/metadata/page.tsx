@@ -1,11 +1,42 @@
 "use client";
 
 import { gql, useMutation, useQuery } from "@apollo/client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+import { AdminErrorBanner } from "../../../components/AdminErrorBanner";
+import { SyncTablesModal } from "../../../components/SyncTablesModal";
+import { parseConnectionUrl } from "../../../lib/connection-url";
+import { formatMutationError } from "../../../lib/mutation-error";
 
 const DATASOURCES = gql`
   query Datasources {
     datasources {
+      id
+      name
+      connectionUrl
+      isActive
+    }
+  }
+`;
+
+const CREATE_DATASOURCE = gql`
+  mutation CreateDatasource($input: CreateDatasourceInput!) {
+    createDatasource(input: $input) {
+      id
+      name
+    }
+  }
+`;
+
+const DELETE_DATASOURCE = gql`
+  mutation DeleteDatasource($datasourceId: Int!) {
+    deleteDatasource(datasourceId: $datasourceId)
+  }
+`;
+
+const UPDATE_DATASOURCE = gql`
+  mutation UpdateDatasource($input: UpdateDatasourceInput!) {
+    updateDatasource(input: $input) {
       id
       name
     }
@@ -120,11 +151,15 @@ const INDEX_DATASOURCE = gql`
 export default function MetadataPage() {
   const [selectedDs, setSelectedDs] = useState<number | null>(null);
   const [selectedTable, setSelectedTable] = useState<number | null>(null);
+  const [newDatasource, setNewDatasource] = useState({ name: "", connectionUrl: "" });
+  const [editDsName, setEditDsName] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [newTable, setNewTable] = useState({ tableName: "", description: "" });
   const [newColumn, setNewColumn] = useState({ columnName: "", dataType: "VARCHAR", description: "" });
   const [newFk, setNewFk] = useState({ fromTableId: 0, fromColumn: "", toTableId: 0, toColumn: "" });
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
 
-  const { data: dsData } = useQuery(DATASOURCES);
+  const { data: dsData, refetch: refetchDatasources } = useQuery(DATASOURCES);
   const { data: tablesData, refetch: refetchTables } = useQuery(TABLES_DETAIL, {
     variables: { datasourceId: selectedDs },
     skip: !selectedDs,
@@ -138,6 +173,9 @@ export default function MetadataPage() {
     skip: !selectedDs,
   });
 
+  const [createDatasource] = useMutation(CREATE_DATASOURCE);
+  const [updateDatasource] = useMutation(UPDATE_DATASOURCE);
+  const [deleteDatasource] = useMutation(DELETE_DATASOURCE);
   const [createTable] = useMutation(CREATE_TABLE);
   const [updateTable] = useMutation(UPDATE_TABLE);
   const [deleteTable] = useMutation(DELETE_TABLE);
@@ -153,6 +191,72 @@ export default function MetadataPage() {
   const tables = tablesData?.tablesDetail || [];
   const columns = columnsData?.columns || [];
   const fks = fksData?.fkRelationships || [];
+  const selectedDatasource = datasources.find(
+    (ds: { id: number; name: string; connectionUrl: string }) => ds.id === selectedDs
+  );
+  const parsedConnection = selectedDatasource?.connectionUrl
+    ? parseConnectionUrl(selectedDatasource.connectionUrl)
+    : null;
+
+  useEffect(() => {
+    setEditDsName(selectedDatasource?.name ?? "");
+  }, [selectedDs, selectedDatasource?.name]);
+
+  const handleCreateDatasource = async () => {
+    if (!newDatasource.name.trim() || !newDatasource.connectionUrl.trim()) return;
+    setError(null);
+    try {
+      const { data } = await createDatasource({
+        variables: {
+          input: {
+            name: newDatasource.name.trim(),
+            connectionUrl: newDatasource.connectionUrl.trim(),
+          },
+        },
+      });
+      setNewDatasource({ name: "", connectionUrl: "" });
+      await refetchDatasources();
+      if (data?.createDatasource?.id) {
+        setSelectedDs(data.createDatasource.id);
+        setSelectedTable(null);
+        setSyncModalOpen(true);
+      }
+    } catch (err) {
+      setError(formatMutationError(err));
+    }
+  };
+
+  const handleUpdateDatasourceName = async () => {
+    if (!selectedDs || !editDsName.trim()) return;
+    if (editDsName.trim() === selectedDatasource?.name) return;
+    setError(null);
+    try {
+      await updateDatasource({
+        variables: { input: { id: selectedDs, name: editDsName.trim() } },
+      });
+      await refetchDatasources();
+    } catch (err) {
+      setError(formatMutationError(err));
+    }
+  };
+
+  const handleDeleteDatasource = async () => {
+    if (!selectedDs) return;
+    const ds = datasources.find((d: { id: number; name: string }) => d.id === selectedDs);
+    const label = ds?.name ?? `ID ${selectedDs}`;
+    if (!window.confirm(`确定删除数据源「${label}」？将同时删除其表、列、外键、模板、知识库条目及 RAG 索引。`)) {
+      return;
+    }
+    setError(null);
+    try {
+      await deleteDatasource({ variables: { datasourceId: selectedDs } });
+      setSelectedDs(null);
+      setSelectedTable(null);
+      await refetchDatasources();
+    } catch (err) {
+      setError(formatMutationError(err));
+    }
+  };
 
   const handleCreateTable = async () => {
     if (!selectedDs || !newTable.tableName) return;
@@ -214,32 +318,123 @@ export default function MetadataPage() {
   return (
     <div>
       <h1 className="page-title">元数据管理</h1>
+      <AdminErrorBanner message={error} onDismiss={() => setError(null)} />
 
       <div className="card">
-        <div className="form-group">
-          <label>数据源</label>
-          <select
-            value={selectedDs ?? ""}
-            onChange={(e) => {
-              setSelectedDs(Number(e.target.value));
-              setSelectedTable(null);
-            }}
-          >
-            <option value="">选择数据源</option>
-            {datasources.map((ds: { id: number; name: string }) => (
-              <option key={ds.id} value={ds.id}>
-                {ds.name}
-              </option>
-            ))}
-          </select>
+        <h3>数据源</h3>
+        <div className="form-row">
+          <input
+            placeholder="名称"
+            value={newDatasource.name}
+            onChange={(e) => setNewDatasource({ ...newDatasource, name: e.target.value })}
+          />
+          <input
+            placeholder="连接 URL（如 mysql://user:pass@host:3306/db）"
+            value={newDatasource.connectionUrl}
+            onChange={(e) =>
+              setNewDatasource({ ...newDatasource, connectionUrl: e.target.value })
+            }
+            style={{ flex: 2 }}
+          />
+          <button className="btn" onClick={handleCreateDatasource}>
+            新增数据源
+          </button>
         </div>
-        <button
-          className="btn"
-          onClick={() => selectedDs && indexDatasource({ variables: { datasourceId: selectedDs } })}
-          disabled={!selectedDs || indexing}
-        >
-          {indexing ? "索引中..." : "重建全量 RAG 索引"}
-        </button>
+        <div className="form-group" style={{ marginTop: "1rem" }}>
+          <label>当前数据源</label>
+          <div className="form-row">
+            <select
+              value={selectedDs ?? ""}
+              onChange={(e) => {
+                setSelectedDs(Number(e.target.value));
+                setSelectedTable(null);
+              }}
+            >
+              <option value="">选择数据源</option>
+              {datasources.map((ds: { id: number; name: string }) => (
+                <option key={ds.id} value={ds.id}>
+                  {ds.name}
+                </option>
+              ))}
+            </select>
+            <input
+              placeholder="编辑名称"
+              value={editDsName}
+              onChange={(e) => setEditDsName(e.target.value)}
+              disabled={!selectedDs}
+              style={{ marginLeft: "0.5rem" }}
+            />
+            <button
+              className="btn btn-sm"
+              onClick={handleUpdateDatasourceName}
+              disabled={
+                !selectedDs ||
+                !editDsName.trim() ||
+                editDsName.trim() === selectedDatasource?.name
+              }
+              style={{ marginLeft: "0.5rem" }}
+            >
+              保存名称
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={handleDeleteDatasource}
+              disabled={!selectedDs}
+              style={{ marginLeft: "0.5rem" }}
+            >
+              删除数据源
+            </button>
+            <button
+              className="btn"
+              onClick={() => setSyncModalOpen(true)}
+              disabled={!selectedDs}
+              style={{ marginLeft: "0.5rem" }}
+            >
+              扫描并同步表
+            </button>
+            <button
+              className="btn"
+              onClick={() => selectedDs && indexDatasource({ variables: { datasourceId: selectedDs } })}
+              disabled={!selectedDs || indexing}
+              style={{ marginLeft: "0.5rem" }}
+            >
+              {indexing ? "索引中..." : "重建全量 RAG 索引"}
+            </button>
+          </div>
+          {selectedDs && selectedDatasource && (
+            <div
+              style={{
+                marginTop: "1rem",
+                padding: "0.75rem 1rem",
+                background: "#1e293b",
+                borderRadius: "6px",
+                fontSize: "0.875rem",
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: "0.5rem 1.5rem",
+              }}
+            >
+              {parsedConnection ? (
+                <>
+                  <div>
+                    <span style={{ color: "#94a3b8" }}>连接 </span>
+                    <span>{parsedConnection.connection}</span>
+                  </div>
+                  <div>
+                    <span style={{ color: "#94a3b8" }}>用户名 </span>
+                    <span>{parsedConnection.username}</span>
+                  </div>
+                  <div>
+                    <span style={{ color: "#94a3b8" }}>库 </span>
+                    <span>{parsedConnection.database}</span>
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: "#fca5a5" }}>无法解析连接 URL</div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {selectedDs && (
@@ -455,6 +650,16 @@ export default function MetadataPage() {
           </div>
         </>
       )}
+
+      <SyncTablesModal
+        open={syncModalOpen}
+        datasourceId={selectedDs}
+        onClose={() => setSyncModalOpen(false)}
+        onSynced={() => {
+          refetchTables();
+          refetchFks();
+        }}
+      />
     </div>
   );
 }

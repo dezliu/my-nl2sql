@@ -6,6 +6,7 @@ type AskStreamEvent = {
 type Datasource = {
   id: number;
   name: string;
+  connectionUrl: string;
   isActive: boolean;
 };
 

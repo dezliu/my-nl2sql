@@ -7,6 +7,7 @@ import sqlglot
 from sqlglot import exp
 
 from backend.config import settings
+from backend.sql.connection import connect_mysql
 
 
 @dataclass
@@ -132,13 +133,7 @@ async def execute_sql(connection_url: str, sql: str, limit: int = 100) -> dict:
     """Execute validated SQL against datasource (read-only)."""
     import aiomysql
 
-    conn = await aiomysql.connect(
-        host=_parse_host(connection_url),
-        port=_parse_port(connection_url),
-        user=_parse_user(connection_url),
-        password=_parse_password(connection_url),
-        db=_parse_db(connection_url),
-    )
+    conn = await connect_mysql(connection_url)
     try:
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute(sql)
@@ -147,33 +142,3 @@ async def execute_sql(connection_url: str, sql: str, limit: int = 100) -> dict:
             return {"columns": columns, "rows": rows, "row_count": len(rows)}
     finally:
         conn.close()
-
-
-def _parse_host(url: str) -> str:
-    from urllib.parse import urlparse
-
-    return urlparse(url).hostname or "localhost"
-
-
-def _parse_port(url: str) -> int:
-    from urllib.parse import urlparse
-
-    return urlparse(url).port or 3306
-
-
-def _parse_user(url: str) -> str:
-    from urllib.parse import urlparse
-
-    return urlparse(url).username or "root"
-
-
-def _parse_password(url: str) -> str:
-    from urllib.parse import urlparse
-
-    return urlparse(url).password or ""
-
-
-def _parse_db(url: str) -> str:
-    from urllib.parse import urlparse
-
-    return (urlparse(url).path or "/").lstrip("/")

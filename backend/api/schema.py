@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.fastapi import GraphQLRouter
 
-from backend.api.admin_graphql import AdminMutationMixin, AdminQueryMixin
+from backend.api.admin_graphql import AdminMutationMixin, AdminQueryMixin, delete_datasource_cascade
 from backend.api.session_manager import create_session, run_workflow, stream_events
 from backend.cache.llm_cache import LlmCache
 from backend.db.models import (
@@ -81,6 +81,7 @@ class AskInput:
 class DatasourceType:
     id: int
     name: str
+    connection_url: str
     is_active: bool
 
 
@@ -135,6 +136,19 @@ class CreatePromptInput:
     activate: bool = True
 
 
+@strawberry.input
+class CreateDatasourceInput:
+    name: str
+    connection_url: str
+    is_active: bool = True
+
+
+@strawberry.input
+class UpdateDatasourceInput:
+    id: int
+    name: Optional[str] = None
+
+
 @strawberry.type
 class Query(AdminQueryMixin):
     @strawberry.field
@@ -146,7 +160,12 @@ class Query(AdminQueryMixin):
         async with async_session_factory() as session:
             result = await session.execute(select(Datasource))
             return [
-                DatasourceType(id=ds.id, name=ds.name, is_active=ds.is_active)
+                DatasourceType(
+                    id=ds.id,
+                    name=ds.name,
+                    connection_url=ds.connection_url,
+                    is_active=ds.is_active,
+                )
                 for ds in result.scalars().all()
             ]
 
@@ -264,6 +283,52 @@ class Mutation(AdminMutationMixin):
 
         asyncio.create_task(_run())
         return AskSessionType(session_id=session_id)
+
+    @strawberry.mutation
+    async def create_datasource(self, input: CreateDatasourceInput) -> DatasourceType:
+        async with async_session_factory() as session:
+            ds = Datasource(
+                name=input.name.strip(),
+                connection_url=input.connection_url.strip(),
+                is_active=input.is_active,
+            )
+            session.add(ds)
+            await session.commit()
+            await session.refresh(ds)
+            return DatasourceType(
+                id=ds.id,
+                name=ds.name,
+                connection_url=ds.connection_url,
+                is_active=ds.is_active,
+            )
+
+    @strawberry.mutation
+    async def update_datasource(self, input: UpdateDatasourceInput) -> Optional[DatasourceType]:
+        async with async_session_factory() as session:
+            ds = await session.get(Datasource, input.id)
+            if not ds:
+                return None
+            if input.name is not None:
+                name = input.name.strip()
+                if not name:
+                    raise ValueError("数据源名称不能为空")
+                ds.name = name
+            await session.commit()
+            await session.refresh(ds)
+            return DatasourceType(
+                id=ds.id,
+                name=ds.name,
+                connection_url=ds.connection_url,
+                is_active=ds.is_active,
+            )
+
+    @strawberry.mutation
+    async def delete_datasource(self, datasource_id: int) -> bool:
+        async with async_session_factory() as session:
+            ok = await delete_datasource_cascade(session, datasource_id)
+            if ok:
+                await session.commit()
+            return ok
 
     @strawberry.mutation
     async def create_prompt(self, input: CreatePromptInput) -> SystemPromptType:

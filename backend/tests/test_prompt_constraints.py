@@ -11,6 +11,7 @@ from backend.graph.workflow import (
     _format_prompt,
     route_after_sql_generate,
     sql_generate,
+    sql_safety,
 )
 
 
@@ -76,3 +77,58 @@ async def test_sql_generate_cannot_answer_emits_summary():
     event_types = [e["type"] for e in result["stream_events"]]
     assert "SUMMARY" in event_types
     assert "SQL" not in event_types
+    llm_service.astream.assert_awaited_once()
+    assert llm_service.astream.await_args.kwargs["cacheable"] is False
+
+
+@pytest.mark.asyncio
+async def test_sql_generate_defers_cache_until_validation():
+    llm_service = MagicMock()
+    llm_service.astream = AsyncMock(
+        return_value=(
+            '{"sql": "SELECT COUNT(*) FROM users", "cannot_answer": false}',
+            "none",
+        )
+    )
+    state = {
+        "question": "多少用户",
+        "allowed_tables": {"users"},
+        "schema_context": "## Table: users",
+        "system_prompts": {"sql_generator": DEFAULT_PROMPTS[PromptRole.SQL_GENERATOR.value]},
+        "rag_chunks": [],
+        "deep_think": False,
+    }
+    result = await sql_generate(state, llm_service)
+    assert result["sql_llm_cache_content"]
+    assert llm_service.astream.await_args.kwargs["cacheable"] is False
+
+
+@pytest.mark.asyncio
+async def test_sql_safety_caches_only_valid_sql(monkeypatch):
+    session = MagicMock()
+    cache_set = AsyncMock()
+    monkeypatch.setattr(
+        "backend.graph.workflow.LlmCache",
+        lambda _session: MagicMock(set=cache_set),
+    )
+    monkeypatch.setattr(
+        "backend.graph.workflow.ensure_schema_graph",
+        AsyncMock(return_value=MagicMock()),
+    )
+    state = {
+        "question": "多少用户",
+        "allowed_tables": {"users"},
+        "generated_sql": "SELECT COUNT(*) FROM users",
+        "sql_llm_cache_prompt": "prompt",
+        "sql_llm_cache_content": '{"sql": "SELECT COUNT(*) FROM users"}',
+        "sql_llm_cache_role": "sql_generator",
+    }
+    result = await sql_safety(state, session)
+    assert result["sql_valid"] is True
+    cache_set.assert_awaited_once()
+
+    cache_set.reset_mock()
+    state["generated_sql"] = "DELETE FROM users"
+    result = await sql_safety(state, session)
+    assert result["sql_valid"] is False
+    cache_set.assert_not_awaited()

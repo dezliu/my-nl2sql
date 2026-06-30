@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
+from backend.cache.llm_cache import LlmCache
 from backend.db.models import ColumnMetadata, Datasource, FkRelationship, TableMetadata
 from backend.db.prompts import ROLE_GUARDRAILS, USER_LANGUAGE_POLICY, load_active_prompts
 from backend.llm.client import create_chat_llm
@@ -60,6 +61,9 @@ class GraphState(TypedDict, total=False):
     summary: str
     direct_reply: str
     cache_hit_type: str
+    sql_llm_cache_prompt: str
+    sql_llm_cache_content: str
+    sql_llm_cache_role: str
     stream_events: Annotated[list[StreamEvent], lambda a, b: a + b]
     connection_url: str
 
@@ -206,7 +210,10 @@ async def intent_classifier(state: GraphState, llm_service=None) -> GraphState:
     )
     if llm_service:
         content, cache_hit = await llm_service.invoke(
-            "intent_classifier", prompt, session_id=state.get("session_id")
+            "intent_classifier",
+            prompt,
+            session_id=state.get("session_id"),
+            semantic_key=state["question"],
         )
     else:
         llm = _get_llm()
@@ -251,7 +258,10 @@ async def rag_router(state: GraphState, llm_service=None) -> GraphState:
     )
     if llm_service:
         content, _ = await llm_service.invoke(
-            "rag_router", prompt, session_id=state.get("session_id")
+            "rag_router",
+            prompt,
+            session_id=state.get("session_id"),
+            semantic_key=state["question"],
         )
     else:
         llm = _get_llm()
@@ -297,7 +307,10 @@ async def retrieval_judge(state: GraphState, llm_service=None) -> GraphState:
     )
     if llm_service:
         content, _ = await llm_service.invoke(
-            "retrieval_judge", prompt, session_id=state.get("session_id")
+            "retrieval_judge",
+            prompt,
+            session_id=state.get("session_id"),
+            semantic_key=state["question"],
         )
     else:
         llm = _get_llm()
@@ -319,6 +332,25 @@ def _format_allowed_tables(state: GraphState) -> str:
     return ", ".join(sorted(_allowed_tables_set(state)))
 
 
+async def _cache_valid_sql_generation(session: AsyncSession, state: GraphState) -> None:
+    if not state.get("sql_valid") or state.get("cannot_answer"):
+        return
+    prompt = state.get("sql_llm_cache_prompt")
+    content = state.get("sql_llm_cache_content")
+    role = state.get("sql_llm_cache_role")
+    if not prompt or not content or not role:
+        return
+    cache = LlmCache(session)
+    await cache.set(
+        role=role,
+        model=settings.openai_model,
+        prompt=prompt,
+        response=content,
+        token_saved=len(content.split()),
+        semantic_key=state.get("question"),
+    )
+
+
 async def query_expander(state: GraphState, llm_service=None) -> GraphState:
     prompt = _format_prompt(
         state["system_prompts"].get("query_expander", ""),
@@ -328,7 +360,10 @@ async def query_expander(state: GraphState, llm_service=None) -> GraphState:
     )
     if llm_service:
         expanded, _ = await llm_service.invoke(
-            "query_expander", prompt, session_id=state.get("session_id")
+            "query_expander",
+            prompt,
+            session_id=state.get("session_id"),
+            semantic_key=state["question"],
         )
     else:
         llm = _get_llm()
@@ -364,6 +399,7 @@ async def direct_llm(state: GraphState, llm_service=None) -> GraphState:
             on_token=on_token,
             session_id=state.get("session_id"),
             cacheable=False,
+            semantic_key=state["question"],
         )
     else:
         llm = _get_llm()
@@ -408,7 +444,7 @@ async def sql_generate(state: GraphState, llm_service=None) -> GraphState:
         allowed_tables=allowed_tables_str,
     )
 
-    cacheable = not state.get("deep_think")
+    cacheable = False
     events: list[StreamEvent] = []
     stream_role = "thought" if state.get("deep_think") else "sql"
 
@@ -424,6 +460,7 @@ async def sql_generate(state: GraphState, llm_service=None) -> GraphState:
             on_token=on_token,
             session_id=state.get("session_id"),
             cacheable=cacheable,
+            semantic_key=state["question"],
         )
     else:
         llm = _get_llm()
@@ -470,6 +507,9 @@ async def sql_generate(state: GraphState, llm_service=None) -> GraphState:
         "cannot_answer": cannot_answer,
         "sql_retry_count": retry_count,
         "sql_errors": [],
+        "sql_llm_cache_prompt": prompt,
+        "sql_llm_cache_content": content,
+        "sql_llm_cache_role": role,
         "stream_events": events,
     }
 
@@ -497,7 +537,7 @@ async def sql_safety(state: GraphState, session: AsyncSession) -> GraphState:
     schema_graph = await ensure_schema_graph(state, session)
     validator = SqlValidator(_allowed_tables_set(state), schema_graph)
     result = validator.validate(state.get("generated_sql", ""))
-    return {
+    next_state: GraphState = {
         **state,
         "generated_sql": result.sql,
         "sql_valid": result.valid,
@@ -508,6 +548,9 @@ async def sql_safety(state: GraphState, session: AsyncSession) -> GraphState:
             {"sql_valid": result.valid, "errors": result.errors},
         ),
     }
+    if result.valid:
+        await _cache_valid_sql_generation(session, next_state)
+    return next_state
 
 
 def route_after_safety(state: GraphState) -> Literal["execute_or_return", "sql_generate"]:
@@ -562,6 +605,8 @@ async def result_summarizer(state: GraphState, llm_service=None) -> GraphState:
             prompt,
             on_token=on_token,
             session_id=state.get("session_id"),
+            semantic_key=state["question"],
+            cacheable=bool(state.get("sql_valid")) and not state.get("cannot_answer"),
         )
     else:
         llm = _get_llm()

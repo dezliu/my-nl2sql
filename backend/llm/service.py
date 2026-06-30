@@ -1,7 +1,6 @@
 """LLM invocation with hybrid caching and streaming."""
 
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from langchain_core.messages import HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +24,7 @@ class LlmService:
         session_id: str | None = None,
         cacheable: bool = True,
         params: dict | None = None,
+        semantic_key: str | None = None,
     ) -> tuple[str, str]:
         """Returns (response_text, cache_hit_type)."""
         if self.session and cacheable:
@@ -35,6 +35,7 @@ class LlmService:
                 prompt=prompt,
                 params=params,
                 session_id=session_id,
+                semantic_key=semantic_key,
             )
             if result.hit and result.response:
                 return result.response, result.hit_type
@@ -52,6 +53,7 @@ class LlmService:
                 token_saved=len(text.split()),
                 params=params,
                 cacheable=cacheable,
+                semantic_key=semantic_key,
             )
 
         return text, "none"
@@ -64,6 +66,7 @@ class LlmService:
         session_id: str | None = None,
         cacheable: bool = True,
         params: dict | None = None,
+        semantic_key: str | None = None,
     ) -> tuple[str, str]:
         """Stream tokens via on_token; returns (full_text, cache_hit_type)."""
         if self.session and cacheable:
@@ -74,6 +77,7 @@ class LlmService:
                 prompt=prompt,
                 params=params,
                 session_id=session_id,
+                semantic_key=semantic_key,
             )
             if result.hit and result.response:
                 if on_token:
@@ -101,6 +105,7 @@ class LlmService:
                 token_saved=len(text.split()),
                 params=params,
                 cacheable=cacheable,
+                semantic_key=semantic_key,
             )
 
         return text, "none"
