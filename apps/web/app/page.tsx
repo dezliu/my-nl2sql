@@ -1,7 +1,9 @@
 "use client";
 
-import { gql, useMutation, useQuery, useSubscription } from "@apollo/client";
-import { useCallback, useState } from "react";
+import { gql, useQuery } from "@apollo/client";
+import { useCallback, useRef, useState } from "react";
+
+import { askStream, type SseEvent } from "../lib/sse";
 
 const DATASOURCES_QUERY = gql`
   query Datasources {
@@ -13,27 +15,7 @@ const DATASOURCES_QUERY = gql`
   }
 `;
 
-const ASK_MUTATION = gql`
-  mutation AskQuestion($input: AskInput!) {
-    askQuestion(input: $input) {
-      sessionId
-    }
-  }
-`;
-
-const ASK_STREAM_SUB = gql`
-  subscription AskStream($sessionId: String!) {
-    askStream(sessionId: $sessionId) {
-      eventType
-      data
-    }
-  }
-`;
-
-type StreamEvent = {
-  eventType: string;
-  data: Record<string, unknown>;
-};
+type StreamEvent = SseEvent;
 
 function ResultTable({ data }: { data: Record<string, unknown> }) {
   const columns = (data.columns as string[]) || [];
@@ -61,6 +43,18 @@ function ResultTable({ data }: { data: Record<string, unknown> }) {
   );
 }
 
+function StreamingText({ role, text, active }: { role: string; text: string; active: boolean }) {
+  return (
+    <div className={`event-card ${role}`}>
+      <div className="event-label">{role.toUpperCase()}</div>
+      <div className="event-content">
+        {text}
+        {active && <span className="typing-cursor">▋</span>}
+      </div>
+    </div>
+  );
+}
+
 function EventCard({ event }: { event: StreamEvent }) {
   const typeClass = event.eventType.toLowerCase().replace("_", "");
   const label = event.eventType;
@@ -82,6 +76,8 @@ function EventCard({ event }: { event: StreamEvent }) {
         </div>
       );
       break;
+    case "LLM_TOKEN":
+      return null;
     case "THOUGHT":
       content = <span>{String(event.data.text)}</span>;
       break;
@@ -97,6 +93,8 @@ function EventCard({ event }: { event: StreamEvent }) {
     case "ERROR":
       content = <span style={{ color: "#ef4444" }}>{String(event.data.message)}</span>;
       break;
+    case "DONE":
+      return null;
     default:
       content = <pre>{JSON.stringify(event.data, null, 2)}</pre>;
   }
@@ -114,44 +112,86 @@ export default function HomePage() {
   const [deepThink, setDeepThink] = useState(false);
   const [executionMode, setExecutionMode] = useState("AUTO");
   const [datasourceId, setDatasourceId] = useState<number | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [events, setEvents] = useState<StreamEvent[]>([]);
+  const [streaming, setStreaming] = useState<Record<string, { text: string; active: boolean }>>({});
   const [loading, setLoading] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const { data: dsData } = useQuery(DATASOURCES_QUERY);
-  const [askQuestion] = useMutation(ASK_MUTATION);
-
-  useSubscription(ASK_STREAM_SUB, {
-    variables: { sessionId },
-    skip: !sessionId,
-    onData: ({ data }) => {
-      const evt = data.data?.askStream;
-      if (evt) {
-        setEvents((prev) => [...prev, evt]);
-        if (evt.eventType === "DONE") {
-          setLoading(false);
-          setSessionId(null);
-        }
-      }
-    },
-  });
 
   const handleSubmit = useCallback(async () => {
     if (!question.trim() || !datasourceId) return;
+
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+
     setEvents([]);
+    setStreaming({});
     setLoading(true);
-    const { data } = await askQuestion({
-      variables: {
-        input: {
+
+    try {
+      await askStream(
+        {
           question,
           datasourceId,
           deepThink,
           executionMode,
         },
-      },
-    });
-    setSessionId(data.askQuestion.sessionId);
-  }, [question, datasourceId, deepThink, executionMode, askQuestion]);
+        (evt) => {
+          if (evt.eventType === "LLM_TOKEN") {
+            const role = String(evt.data.role || "summary");
+            const delta = String(evt.data.delta || "");
+            setStreaming((prev) => {
+              const current = prev[role]?.text ?? "";
+              return {
+                ...prev,
+                [role]: { text: current + delta, active: !evt.data.done },
+              };
+            });
+            return;
+          }
+
+          if (evt.eventType === "SUMMARY" || evt.eventType === "SQL") {
+            const role = evt.eventType === "SQL" ? "sql" : "summary";
+            setStreaming((prev) => ({
+              ...prev,
+              [role]: { text: String(evt.data.text ?? evt.data.sql ?? ""), active: false },
+            }));
+          }
+
+          setEvents((prev) => [...prev, evt]);
+
+          if (evt.eventType === "DONE") {
+            setLoading(false);
+            setStreaming((prev) => {
+              const next = { ...prev };
+              for (const key of Object.keys(next)) {
+                next[key] = { ...next[key], active: false };
+              }
+              return next;
+            });
+          }
+        },
+        abortRef.current.signal
+      );
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        setEvents((prev) => [
+          ...prev,
+          { eventType: "ERROR", data: { message: String(err) } },
+        ]);
+      }
+    } finally {
+      setLoading(false);
+      setStreaming((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          next[key] = { ...next[key], active: false };
+        }
+        return next;
+      });
+    }
+  }, [question, datasourceId, deepThink, executionMode]);
 
   const datasources = dsData?.datasources || [];
 
@@ -203,6 +243,11 @@ export default function HomePage() {
       </div>
 
       <div className="stream-area">
+        {Object.entries(streaming).map(([role, { text, active }]) =>
+          text ? (
+            <StreamingText key={role} role={role} text={text} active={active} />
+          ) : null
+        )}
         {events.map((evt, i) => (
           <EventCard key={i} event={evt} />
         ))}

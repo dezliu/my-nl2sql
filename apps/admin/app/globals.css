@@ -146,3 +146,40 @@ textarea { min-height: 200px; font-family: monospace; }
 .badge-inactive { background: #374151; color: #9ca3af; }
 
 .alert-low { color: #ef4444; }
+
+.form-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
+.form-row input,
+.form-row textarea,
+.form-row select {
+  flex: 1;
+  min-width: 120px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: #60a5fa;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.search-result {
+  border: 1px solid #374151;
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.search-meta {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  margin-bottom: 0.5rem;
+}

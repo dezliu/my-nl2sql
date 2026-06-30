@@ -110,7 +110,19 @@ body {
 .event-card.sql { border-left-color: #38bdf8; }
 .event-card.result { border-left-color: #4ade80; }
 .event-card.summary { border-left-color: #f472b6; }
+.event-card.llmtoken { border-left-color: #f472b6; }
 .event-card.error { border-left-color: #ef4444; }
+
+.typing-cursor {
+  display: inline-block;
+  animation: blink 1s step-end infinite;
+  color: #38bdf8;
+  margin-left: 2px;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
 
 .event-label {
   font-size: 0.75rem;

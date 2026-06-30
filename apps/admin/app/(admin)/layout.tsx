@@ -7,6 +7,9 @@ const NAV = [
   { href: "/", label: "概览" },
   { href: "/prompts", label: "Prompt 管理" },
   { href: "/metadata", label: "元数据" },
+  { href: "/business", label: "业务数据" },
+  { href: "/templates", label: "SQL 模板" },
+  { href: "/rag-search", label: "向量检索" },
   { href: "/cache", label: "缓存监控" },
   { href: "/alerts", label: "RAG 告警" },
 ];

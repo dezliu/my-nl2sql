@@ -112,6 +112,7 @@ class TableMetadata(Base):
     table_name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     is_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_indexed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     datasource: Mapped["Datasource"] = relationship(back_populates="tables")
@@ -161,6 +162,19 @@ class BusinessGlossary(Base):
     term: Mapped[str] = mapped_column(String(128), nullable=False)
     definition: Mapped[str] = mapped_column(Text, nullable=False)
     aliases: Mapped[Optional[str]] = mapped_column(Text)
+    is_indexed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class KnowledgeEntry(Base):
+    __tablename__ = "knowledge_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    datasource_id: Mapped[Optional[int]] = mapped_column(ForeignKey("datasources.id"))
+    category: Mapped[str] = mapped_column(String(64), default="faq")
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    is_indexed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class SqlTemplate(Base):
@@ -172,6 +186,20 @@ class SqlTemplate(Base):
     sql_text: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     use_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_indexed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TemplateRecommendation(Base):
+    __tablename__ = "template_recommendations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    datasource_id: Mapped[int] = mapped_column(ForeignKey("datasources.id"), nullable=False)
+    message_sql_id: Mapped[int] = mapped_column(ForeignKey("message_sql.id"), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    sql_text: Mapped[str] = mapped_column(Text, nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

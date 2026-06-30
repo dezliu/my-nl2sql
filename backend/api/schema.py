@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.fastapi import GraphQLRouter
 
+from backend.api.admin_graphql import AdminMutationMixin, AdminQueryMixin
 from backend.api.session_manager import create_session, run_workflow, stream_events
 from backend.cache.llm_cache import LlmCache
 from backend.db.models import (
@@ -43,6 +44,7 @@ class StreamEventType(enum.Enum):
     INTENT = "INTENT"
     RAG_CHUNK = "RAG_CHUNK"
     THOUGHT = "THOUGHT"
+    LLM_TOKEN = "LLM_TOKEN"
     SQL = "SQL"
     RESULT = "RESULT"
     SUMMARY = "SUMMARY"
@@ -134,7 +136,7 @@ class CreatePromptInput:
 
 
 @strawberry.type
-class Query:
+class Query(AdminQueryMixin):
     @strawberry.field
     async def health(self) -> Health:
         return Health(status="ok", version="0.1.0")
@@ -241,7 +243,7 @@ class Query:
 
 
 @strawberry.type
-class Mutation:
+class Mutation(AdminMutationMixin):
     @strawberry.mutation
     async def ask_question(self, input: AskInput) -> AskSessionType:
         session_id = str(uuid.uuid4())

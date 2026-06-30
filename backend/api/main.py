@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.schema import graphql_router
+from backend.api.sse import router as sse_router
 from backend.db.prompts import seed_default_prompts
 from backend.db.session import async_session_factory
 
@@ -28,6 +29,7 @@ app.add_middleware(
 )
 
 app.include_router(graphql_router, prefix="/graphql")
+app.include_router(sse_router)
 
 
 @app.get("/health")

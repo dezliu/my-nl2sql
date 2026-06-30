@@ -48,6 +48,7 @@ class GraphState(TypedDict, total=False):
     cache_hit_type: str
     stream_events: Annotated[list[StreamEvent], lambda a, b: a + b]
     connection_url: str
+    event_emitter: Any
 
 
 def _emit(state: GraphState, event_type: str, data: Any) -> list[StreamEvent]:
@@ -281,12 +282,34 @@ async def query_expander(state: GraphState, llm_service=None) -> GraphState:
     }
 
 
-async def direct_llm(state: GraphState) -> GraphState:
-    llm = _get_llm()
-    response = await llm.ainvoke(
-        [SystemMessage(content="You are a helpful data assistant."), HumanMessage(content=state["question"])]
-    )
-    summary = str(response.content)
+async def direct_llm(state: GraphState, llm_service=None) -> GraphState:
+    prompt = state["question"]
+
+    async def on_token(role: str, delta: str) -> None:
+        emitter = state.get("event_emitter")
+        if emitter:
+            await emitter("LLM_TOKEN", {"role": "summary", "delta": delta})
+
+    if llm_service:
+        summary, _ = await llm_service.astream(
+            "result_summarizer",
+            prompt,
+            on_token=on_token,
+            session_id=state.get("session_id"),
+            cacheable=False,
+        )
+    else:
+        llm = _get_llm()
+        parts: list[str] = []
+        async for chunk in llm.astream(
+            [SystemMessage(content="You are a helpful data assistant."), HumanMessage(content=prompt)]
+        ):
+            delta = str(chunk.content) if chunk.content else ""
+            if delta:
+                parts.append(delta)
+                await on_token("summary", delta)
+        summary = "".join(parts)
+
     return {
         **state,
         "summary": summary,
@@ -310,18 +333,30 @@ async def sql_generate(state: GraphState, llm_service=None) -> GraphState:
 
     cacheable = not state.get("deep_think")
     events: list[StreamEvent] = []
+    stream_role = "thought" if state.get("deep_think") else "sql"
+
+    async def on_token(role: str, delta: str) -> None:
+        emitter = state.get("event_emitter")
+        if emitter:
+            await emitter("LLM_TOKEN", {"role": stream_role, "delta": delta})
 
     if llm_service:
-        content, _ = await llm_service.invoke(
+        content, _ = await llm_service.astream(
             role,
             prompt,
+            on_token=on_token,
             session_id=state.get("session_id"),
             cacheable=cacheable,
         )
     else:
         llm = _get_llm()
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        content = str(response.content)
+        parts: list[str] = []
+        async for chunk in llm.astream([HumanMessage(content=prompt)]):
+            delta = str(chunk.content) if chunk.content else ""
+            if delta:
+                parts.append(delta)
+                await on_token(role, delta)
+        content = "".join(parts)
 
     if state.get("deep_think"):
         events = _emit(state, "THOUGHT", {"text": "Starting ReAct reasoning..."})
@@ -401,14 +436,29 @@ async def result_summarizer(state: GraphState, llm_service=None) -> GraphState:
         sql=state.get("generated_sql", ""),
         result_preview=str(state.get("query_result", "Not executed"))[:2000],
     )
+
+    async def on_token(role: str, delta: str) -> None:
+        emitter = state.get("event_emitter")
+        if emitter:
+            await emitter("LLM_TOKEN", {"role": "summary", "delta": delta})
+
     if llm_service:
-        summary, _ = await llm_service.invoke(
-            "result_summarizer", prompt, session_id=state.get("session_id")
+        summary, _ = await llm_service.astream(
+            "result_summarizer",
+            prompt,
+            on_token=on_token,
+            session_id=state.get("session_id"),
         )
     else:
         llm = _get_llm()
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        summary = str(response.content)
+        parts: list[str] = []
+        async for chunk in llm.astream([HumanMessage(content=prompt)]):
+            delta = str(chunk.content) if chunk.content else ""
+            if delta:
+                parts.append(delta)
+                await on_token("summary", delta)
+        summary = "".join(parts)
+
     return {
         **state,
         "summary": summary,
@@ -420,13 +470,15 @@ async def finalize(state: GraphState) -> GraphState:
     return {**state, "stream_events": _emit(state, "DONE", {"session_id": state.get("session_id")})}
 
 
-def build_graph(session: AsyncSession):
+def build_graph(session: AsyncSession, event_emitter=None):
     from backend.llm.service import LlmService
 
     llm_service = LlmService(session)
 
     async def wrap(fn):
         async def node(state: GraphState) -> GraphState:
+            if event_emitter and not state.get("event_emitter"):
+                state["event_emitter"] = event_emitter
             if fn.__name__ == "load_context":
                 return await load_context(state, session)
             if fn.__name__ in (
@@ -436,6 +488,7 @@ def build_graph(session: AsyncSession):
                 "query_expander",
                 "sql_generate",
                 "result_summarizer",
+                "direct_llm",
             ):
                 return await fn(state, llm_service)
             return await fn(state)

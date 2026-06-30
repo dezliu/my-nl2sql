@@ -86,3 +86,19 @@ async def _score_rag_chunks_async(
         await session.commit()
 
     return {"scored": scored, "alerts": alerts}
+
+
+@celery_app.task(name="scan_template_candidates")
+def scan_template_candidates() -> dict:
+    import asyncio
+
+    return asyncio.get_event_loop().run_until_complete(_scan_template_candidates_async())
+
+
+async def _scan_template_candidates_async() -> dict:
+    from backend.db.session import async_session_factory
+    from backend.services.template_recommender import scan_template_candidates
+
+    async with async_session_factory() as session:
+        created = await scan_template_candidates(session)
+    return {"created": created}
