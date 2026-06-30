@@ -92,6 +92,8 @@ const UPDATE_TABLE = gql`
   mutation UpdateTable($input: UpdateTableInput!) {
     updateTable(input: $input) {
       id
+      isAllowed
+      isIndexed
     }
   }
 `;
@@ -486,18 +488,26 @@ export default function MetadataPage() {
                         </button>
                       </td>
                       <td>{t.description || "-"}</td>
-                      <td>{t.isAllowed ? "是" : "否"}</td>
-                      <td>{t.isIndexed ? "是" : "否"}</td>
+                      <td>
+                        <span className={`badge ${t.isAllowed ? "badge-active" : "badge-inactive"}`}>
+                          {t.isAllowed ? "已允许" : "已禁止"}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`badge ${t.isIndexed ? "badge-active" : "badge-inactive"}`}>
+                          {t.isIndexed ? "已入库" : "未入库"}
+                        </span>
+                      </td>
                       <td>
                         <button
-                          className="btn btn-sm"
+                          className={`btn btn-sm ${t.isAllowed ? "" : "btn-success"}`}
                           onClick={() =>
                             updateTable({
                               variables: { input: { id: t.id, isAllowed: !t.isAllowed } },
                             }).then(() => refetchTables())
                           }
                         >
-                          切换允许
+                          {t.isAllowed ? "禁止查询" : "允许查询"}
                         </button>
                         <button
                           className="btn btn-sm"
