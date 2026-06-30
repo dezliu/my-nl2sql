@@ -84,10 +84,12 @@ export function TableMultiSelect({
       value={value}
       onChange={onChange}
       placeholder={placeholder}
+      title="选择期望表"
       searchPlaceholder="搜索表名..."
       loading={loading}
       emptyMessage="暂无可用表，请先在元数据页维护"
       noResultsMessage="无匹配表名"
+      modalWidth={640}
     />
   );
 }

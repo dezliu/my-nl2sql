@@ -74,12 +74,17 @@ export function ChunkMultiSelect({
       value={stringValue}
       onChange={(ids) => onChange(ids.map(Number).filter((n) => !Number.isNaN(n)))}
       placeholder={placeholder}
+      title="选择期望 chunk"
       searchPlaceholder="搜索 chunk ID / 类型 / 标题..."
       loading={loading}
       emptyMessage="暂无已索引 chunk，请先在元数据或业务页入库"
       noResultsMessage="无匹配 chunk"
       serverSearch
       onSearchChange={setSearch}
+      onOpen={() => {
+        void fetchChunks("");
+      }}
+      modalWidth={860}
     />
   );
 }

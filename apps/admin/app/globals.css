@@ -276,3 +276,129 @@ textarea { min-height: 200px; font-family: monospace; }
   color: #9ca3af;
   font-size: 0.875rem;
 }
+
+.picker-field {
+  flex: 1;
+  min-width: 200px;
+}
+
+.picker-trigger-btn {
+  width: 100%;
+  text-align: left;
+  background: #111827;
+  border: 1px solid #374151;
+  color: #e5e7eb;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.picker-trigger-btn:hover {
+  border-color: #60a5fa;
+}
+
+.picker-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.picker-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: #374151;
+  border-radius: 9999px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  max-width: 100%;
+}
+
+.picker-tag-remove {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  font-size: 1rem;
+}
+
+.picker-tag-remove:hover {
+  color: #f87171;
+}
+
+.picker-search {
+  width: 100%;
+  margin-bottom: 0.75rem;
+}
+
+.picker-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+  color: #9ca3af;
+}
+
+.picker-toolbar-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.picker-list {
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  padding: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.picker-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.35rem;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+}
+
+.picker-item:hover {
+  background: #1f2937;
+}
+
+.picker-item input[type="checkbox"] {
+  width: auto;
+  min-width: 1rem;
+  flex-shrink: 0;
+  margin: 0.15rem 0 0;
+  cursor: pointer;
+}
+
+.picker-item span {
+  flex: 1;
+  word-break: break-word;
+}
+
+.picker-empty {
+  padding: 1rem;
+  color: #9ca3af;
+  text-align: center;
+  font-size: 0.875rem;
+}
+
+.picker-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.form-row .picker-field {
+  flex: 1;
+  min-width: 180px;
+}
