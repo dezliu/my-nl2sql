@@ -17,6 +17,7 @@ async def test_sse_ask_stream_events(client, seeded_db, mock_run_workflow):
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers.get("x-session-id")
 
     body = await response.aread()
     text = body.decode("utf-8")
@@ -24,6 +25,37 @@ async def test_sse_ask_stream_events(client, seeded_db, mock_run_workflow):
     assert "event: LLM_TOKEN" in text
     assert "event: DONE" in text
     assert "测试" in text
+
+
+@pytest.mark.asyncio
+async def test_sse_stop_unknown_session(client):
+    response = await client.post(
+        "/api/ask/stop",
+        json={"session_id": "nonexistent"},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_sse_stop_and_resume(client, seeded_db, mock_run_workflow):
+    ds_id = seeded_db["datasource"].id
+    from backend.api.session_manager import get_session, register_session
+
+    session_id = "test-pause-session"
+    register_session(
+        session_id,
+        question="q",
+        datasource_id=ds_id,
+        deep_think=False,
+        execution_mode="AUTO",
+    )
+    sess = get_session(session_id)
+    assert sess is not None
+    sess.status = "paused"
+
+    response = await client.post("/api/ask/resume", json={"session_id": session_id})
+    assert response.status_code == 200
+    assert response.headers.get("x-session-id") == session_id
 
 
 @pytest.mark.asyncio

@@ -1,20 +1,27 @@
-"""Session manager for streaming ask workflow."""
+"""Session manager for streaming ask workflow with pause/resume."""
 
 import asyncio
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
-from backend.graph.workflow import GraphState, build_graph
+from backend.graph.workflow import GraphState, build_graph, clear_workflow_session_cache
 
 EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+SessionStatus = Literal["running", "paused", "done", "error"]
 
 
 @dataclass
 class AskSession:
     session_id: str
     question: str = ""
+    datasource_id: int = 0
+    deep_think: bool = False
+    execution_mode: str = "AUTO"
+    status: SessionStatus = "running"
+    cancelled: bool = False
     events: asyncio.Queue = field(default_factory=asyncio.Queue)
     done: bool = False
 
@@ -26,10 +33,53 @@ def get_session(session_id: str) -> AskSession | None:
     return _sessions.get(session_id)
 
 
-def create_session(session_id: str, question: str = "") -> AskSession:
-    session = AskSession(session_id=session_id, question=question)
+def register_session(
+    session_id: str,
+    *,
+    question: str,
+    datasource_id: int,
+    deep_think: bool,
+    execution_mode: str,
+    queue: asyncio.Queue | None = None,
+) -> AskSession:
+    session = AskSession(
+        session_id=session_id,
+        question=question,
+        datasource_id=datasource_id,
+        deep_think=deep_think,
+        execution_mode=execution_mode,
+        events=queue or asyncio.Queue(),
+        status="running",
+        cancelled=False,
+        done=False,
+    )
     _sessions[session_id] = session
     return session
+
+
+def create_session(session_id: str, question: str = "") -> AskSession:
+    return register_session(
+        session_id,
+        question=question,
+        datasource_id=0,
+        deep_think=False,
+        execution_mode="AUTO",
+    )
+
+
+def request_stop(session_id: str) -> bool:
+    ask_session = _sessions.get(session_id)
+    if ask_session and ask_session.status == "running":
+        ask_session.cancelled = True
+        return True
+    return False
+
+
+def get_paused_session(session_id: str) -> AskSession | None:
+    ask_session = _sessions.get(session_id)
+    if ask_session and ask_session.status == "paused":
+        return ask_session
+    return None
 
 
 async def push_event(session_id: str, event_type: str, data: dict[str, Any]) -> None:
@@ -45,11 +95,30 @@ def make_queue_emitter(queue: asyncio.Queue) -> EventEmitter:
     return emit
 
 
+async def _finish_stream(
+    ask_session: AskSession | None,
+    event_emitter: EventEmitter | None,
+    session_id: str,
+    *,
+    terminal: bool,
+) -> None:
+    if terminal and event_emitter:
+        await event_emitter("DONE", {"session_id": session_id})
+    if ask_session:
+        if terminal:
+            ask_session.done = True
+            clear_workflow_session_cache(session_id)
+        if ask_session.events:
+            await ask_session.events.put(None)
+
+
 async def run_workflow(
     session_id: str,
     initial_state: GraphState,
     db_session,
     event_emitter: EventEmitter | None = None,
+    *,
+    resume: bool = False,
 ) -> None:
     ask_session = _sessions.get(session_id)
     queue = ask_session.events if ask_session else None
@@ -60,20 +129,50 @@ async def run_workflow(
         elif queue:
             await queue.put({"type": event_type, "data": data})
 
-    initial_state["event_emitter"] = emit
+    if ask_session:
+        ask_session.status = "running"
+        ask_session.cancelled = False
+
+    config = {"configurable": {"thread_id": session_id}}
+    graph_input: GraphState | None = None if resume else initial_state
+
     try:
         graph = build_graph(db_session, event_emitter=emit)
-        async for event in graph.astream(initial_state, stream_mode="values"):
-            events = event.get("stream_events", [])
-            for e in events:
+        async for event in graph.astream(graph_input, config, stream_mode="values"):
+            stream_events = event.get("stream_events", [])
+            for e in stream_events:
                 await emit(e["type"], e.get("data", {}))
+            if ask_session and ask_session.cancelled:
+                ask_session.status = "paused"
+                await emit("PAUSED", {"session_id": session_id, "message": "已暂停，可继续生成"})
+                await _finish_stream(ask_session, event_emitter, session_id, terminal=False)
+                return
+        if ask_session:
+            ask_session.status = "done"
     except Exception as e:
+        if ask_session:
+            ask_session.status = "error"
         await emit("ERROR", {"message": str(e)})
     finally:
-        await emit("DONE", {"session_id": session_id})
-        if ask_session:
-            ask_session.done = True
-            await ask_session.events.put(None)
+        if ask_session and ask_session.status in ("done", "error"):
+            await _finish_stream(ask_session, event_emitter, session_id, terminal=True)
+
+
+async def resume_workflow(
+    session_id: str,
+    db_session,
+    event_emitter: EventEmitter,
+) -> None:
+    ask_session = get_paused_session(session_id)
+    if not ask_session:
+        raise ValueError("Session is not paused or does not exist")
+    await run_workflow(
+        session_id,
+        {},
+        db_session,
+        event_emitter=event_emitter,
+        resume=True,
+    )
 
 
 async def stream_events(session_id: str) -> AsyncGenerator[dict, None]:

@@ -272,6 +272,22 @@ body {
   cursor: not-allowed;
 }
 
+.btn-stop {
+  background: #dc2626;
+  color: white;
+  border: none;
+  padding: 0.75rem 1.25rem;
+  border-radius: 12px;
+  font-size: 0.9375rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  min-width: 64px;
+}
+
+.btn-stop:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
 .result-table {
   width: 100%;
   border-collapse: collapse;

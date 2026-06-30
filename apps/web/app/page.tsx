@@ -3,7 +3,7 @@
 import { gql, useQuery } from "@apollo/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { askStream, type SseEvent } from "../lib/sse";
+import { askStream, resumeStream, stopStream, type SseEvent } from "../lib/sse";
 
 const DATASOURCES_QUERY = gql`
   query Datasources {
@@ -40,6 +40,13 @@ const PHASE_HINT: Record<string, string> = {
   result_summarizer: "生成总结",
   direct_llm: "生成回答",
   direct_reply: "直接回复",
+  resume: "继续生成",
+};
+
+type PausedSession = {
+  sessionId: string;
+  question: string;
+  assistantId: string;
 };
 
 function ResultTable({ data }: { data: Record<string, unknown> }) {
@@ -77,7 +84,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
         {isUser ? "你" : "AI"}
       </div>
       <div className={`chat-bubble ${isUser ? "bubble-user" : "bubble-assistant"}`}>
-        {!isUser && message.phase && message.streaming && (
+        {!isUser && message.phase && (
           <div className="chat-phase">{message.phase}</div>
         )}
         {message.content ? (
@@ -116,6 +123,10 @@ export default function HomePage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const assistantIdRef = useRef<string | null>(null);
   const streamBuffersRef = useRef<Record<string, string>>({});
+  const submittedQuestionRef = useRef("");
+  const activeSessionIdRef = useRef<string | null>(null);
+  const abortedRef = useRef(false);
+  const [pausedSession, setPausedSession] = useState<PausedSession | null>(null);
 
   const { data: dsData } = useQuery(DATASOURCES_QUERY);
 
@@ -137,6 +148,9 @@ export default function HomePage() {
         case "STATUS": {
           const phase = String(evt.data.phase ?? "");
           const msg = String(evt.data.message ?? PHASE_HINT[phase] ?? "处理中…");
+          if (evt.data.session_id) {
+            activeSessionIdRef.current = String(evt.data.session_id);
+          }
           updateAssistant({ phase: msg, streaming: true });
           break;
         }
@@ -196,54 +210,132 @@ export default function HomePage() {
           });
           break;
         }
+        case "PAUSED":
+          updateAssistant({
+            streaming: false,
+            phase: String(evt.data.message ?? "已暂停，可点击发送继续"),
+          });
+          if (activeSessionIdRef.current && assistantIdRef.current) {
+            setPausedSession({
+              sessionId: activeSessionIdRef.current,
+              question: submittedQuestionRef.current,
+              assistantId: assistantIdRef.current,
+            });
+          }
+          break;
         case "DONE":
           updateAssistant({ streaming: false, phase: undefined });
+          setPausedSession(null);
+          activeSessionIdRef.current = null;
+          if (!abortedRef.current) {
+            setQuestion("");
+          }
+          abortedRef.current = false;
           break;
         default:
           break;
       }
     },
-    [updateAssistant]
+    [updateAssistant, setQuestion]
   );
+
+  const handleStop = useCallback(async () => {
+    if (!loading) return;
+    abortedRef.current = true;
+    const sessionId = activeSessionIdRef.current;
+    if (sessionId) {
+      try {
+        await stopStream(sessionId);
+      } catch {
+        /* backend may already be idle */
+      }
+    }
+    abortRef.current?.abort();
+    setQuestion(submittedQuestionRef.current);
+    updateAssistant({
+      streaming: false,
+      phase: "已停止，可点击发送继续",
+    });
+    if (sessionId && assistantIdRef.current) {
+      setPausedSession({
+        sessionId,
+        question: submittedQuestionRef.current,
+        assistantId: assistantIdRef.current,
+      });
+    }
+    setLoading(false);
+  }, [loading, updateAssistant]);
 
   const handleSubmit = useCallback(async () => {
     if (!question.trim() || !datasourceId || loading) return;
 
+    const trimmed = question.trim();
+    const paused = pausedSession;
+    const isResume = Boolean(paused && trimmed === paused.question);
+
     abortRef.current?.abort();
     abortRef.current = new AbortController();
+    abortedRef.current = false;
 
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
-      role: "user",
-      content: question.trim(),
-      streaming: false,
-    };
-    const assistantId = `assistant-${Date.now()}`;
-    assistantIdRef.current = assistantId;
-    streamBuffersRef.current = {};
+    if (!isResume) {
+      setPausedSession(null);
+      submittedQuestionRef.current = trimmed;
 
-    const assistantMsg: ChatMessage = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      streaming: true,
-      phase: "正在连接…",
-    };
+      const userMsg: ChatMessage = {
+        id: `user-${Date.now()}`,
+        role: "user",
+        content: trimmed,
+        streaming: false,
+      };
+      const assistantId = `assistant-${Date.now()}`;
+      assistantIdRef.current = assistantId;
+      streamBuffersRef.current = {};
 
-    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      const assistantMsg: ChatMessage = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        streaming: true,
+        phase: "正在连接…",
+      };
+
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+    } else {
+      assistantIdRef.current = paused!.assistantId;
+      updateAssistant({
+        streaming: true,
+        phase: "继续生成…",
+        error: undefined,
+      });
+    }
+
     setLoading(true);
 
     try {
-      await askStream(
-        {
-          question: question.trim(),
-          datasourceId,
-          deepThink,
-          executionMode,
-        },
-        handleStreamEvent,
-        abortRef.current.signal
-      );
+      if (isResume && paused) {
+        const result = await resumeStream(
+          paused.sessionId,
+          handleStreamEvent,
+          abortRef.current.signal
+        );
+        if (result.sessionId) {
+          activeSessionIdRef.current = result.sessionId;
+        }
+      } else {
+        const result = await askStream(
+          {
+            question: trimmed,
+            datasourceId,
+            deepThink,
+            executionMode,
+          },
+          handleStreamEvent,
+          abortRef.current.signal
+        );
+        if (result.sessionId) {
+          activeSessionIdRef.current = result.sessionId;
+        }
+      }
       updateAssistant({ streaming: false, phase: undefined });
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
@@ -255,9 +347,20 @@ export default function HomePage() {
       }
     } finally {
       setLoading(false);
-      assistantIdRef.current = null;
+      if (!pausedSession) {
+        assistantIdRef.current = null;
+      }
     }
-  }, [question, datasourceId, deepThink, executionMode, loading, handleStreamEvent, updateAssistant]);
+  }, [
+    question,
+    datasourceId,
+    deepThink,
+    executionMode,
+    loading,
+    handleStreamEvent,
+    updateAssistant,
+    pausedSession,
+  ]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -334,11 +437,15 @@ export default function HomePage() {
             rows={2}
           />
           <button
-            className="btn-send"
-            onClick={handleSubmit}
-            disabled={loading || !question.trim() || !datasourceId}
+            className={loading ? "btn-stop" : "btn-send"}
+            onClick={loading ? handleStop : handleSubmit}
+            disabled={!loading && (!question.trim() || !datasourceId)}
           >
-            {loading ? "…" : "发送"}
+            {loading
+              ? "停止"
+              : pausedSession && question.trim() === pausedSession.question
+                ? "继续"
+                : "发送"}
           </button>
         </div>
       </div>

@@ -6,16 +6,30 @@ import uuid
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
 from backend.db.models import ColumnMetadata, Datasource, FkRelationship, TableMetadata
-from backend.db.prompts import load_active_prompts
+from backend.db.prompts import ROLE_GUARDRAILS, USER_LANGUAGE_POLICY, load_active_prompts
 from backend.llm.client import create_chat_llm
 from backend.rag.retriever import HybridRetriever
 from backend.sql.schema import SchemaGraph, SqlValidator, execute_sql
+
+_CHECKPOINTER = MemorySaver()
+_emitter_cache: dict[str, Any] = {}
+_schema_graph_cache: dict[str, SchemaGraph] = {}
+
+
+def get_workflow_checkpointer() -> MemorySaver:
+    return _CHECKPOINTER
+
+
+def clear_workflow_session_cache(session_id: str) -> None:
+    _emitter_cache.pop(session_id, None)
+    _schema_graph_cache.pop(session_id, None)
 
 
 class StreamEvent(TypedDict):
@@ -37,8 +51,7 @@ class GraphState(TypedDict, total=False):
     sql_retry_count: int
     system_prompts: dict[str, str]
     schema_context: str
-    schema_graph: SchemaGraph
-    allowed_tables: set[str]
+    allowed_tables: list[str]
     cannot_answer: bool
     generated_sql: str
     sql_valid: bool
@@ -49,7 +62,18 @@ class GraphState(TypedDict, total=False):
     cache_hit_type: str
     stream_events: Annotated[list[StreamEvent], lambda a, b: a + b]
     connection_url: str
-    event_emitter: Any
+
+
+def _get_emitter(state: GraphState) -> Any:
+    sid = state.get("session_id")
+    return _emitter_cache.get(sid) if sid else None
+
+
+def _allowed_tables_set(state: GraphState) -> set[str]:
+    tables = state.get("allowed_tables", [])
+    if isinstance(tables, set):
+        return tables
+    return set(tables)
 
 
 def _emit(state: GraphState, event_type: str, data: Any) -> list[StreamEvent]:
@@ -77,21 +101,22 @@ def _parse_json(text: str) -> dict:
     return {}
 
 
-async def load_context(state: GraphState, session: AsyncSession) -> GraphState:
-    prompts = await load_active_prompts(session)
-    ds = await session.get(Datasource, state["datasource_id"])
+async def build_schema_from_db(
+    session: AsyncSession, datasource_id: int
+) -> tuple[SchemaGraph, list[str], str, str]:
+    ds = await session.get(Datasource, datasource_id)
     connection_url = ds.connection_url if ds else ""
 
     tables_result = await session.execute(
         select(TableMetadata).where(
-            TableMetadata.datasource_id == state["datasource_id"],
+            TableMetadata.datasource_id == datasource_id,
             TableMetadata.is_allowed.is_(True),
         )
     )
     tables = tables_result.scalars().all()
 
     fk_result = await session.execute(
-        select(FkRelationship).where(FkRelationship.datasource_id == state["datasource_id"])
+        select(FkRelationship).where(FkRelationship.datasource_id == datasource_id)
     )
     fks = fk_result.scalars().all()
 
@@ -139,13 +164,33 @@ async def load_context(state: GraphState, session: AsyncSession) -> GraphState:
             + ", ".join(relevant_tables)
         )
 
+    return schema_graph, relevant_tables, schema_context, connection_url
+
+
+async def ensure_schema_graph(state: GraphState, session: AsyncSession) -> SchemaGraph:
+    sid = state.get("session_id", "")
+    if sid and sid in _schema_graph_cache:
+        return _schema_graph_cache[sid]
+    schema_graph, _, _, _ = await build_schema_from_db(session, state["datasource_id"])
+    if sid:
+        _schema_graph_cache[sid] = schema_graph
+    return schema_graph
+
+
+async def load_context(state: GraphState, session: AsyncSession) -> GraphState:
+    prompts = await load_active_prompts(session)
+    schema_graph, allowed_tables, schema_context, connection_url = await build_schema_from_db(
+        session, state["datasource_id"]
+    )
+    session_id = state.get("session_id") or str(uuid.uuid4())
+    _schema_graph_cache[session_id] = schema_graph
+
     return {
         **state,
-        "session_id": state.get("session_id") or str(uuid.uuid4()),
+        "session_id": session_id,
         "system_prompts": prompts,
         "connection_url": connection_url,
-        "schema_graph": schema_graph,
-        "allowed_tables": schema_graph.allowed_tables,
+        "allowed_tables": allowed_tables,
         "schema_context": schema_context,
         "loop_count": 0,
         "sql_retry_count": 0,
@@ -271,7 +316,7 @@ def route_after_judge(state: GraphState) -> Literal["query_expander", "sql_gener
 
 
 def _format_allowed_tables(state: GraphState) -> str:
-    return ", ".join(sorted(state.get("allowed_tables", [])))
+    return ", ".join(sorted(_allowed_tables_set(state)))
 
 
 async def query_expander(state: GraphState, llm_service=None) -> GraphState:
@@ -299,17 +344,23 @@ async def query_expander(state: GraphState, llm_service=None) -> GraphState:
 
 
 async def direct_llm(state: GraphState, llm_service=None) -> GraphState:
-    prompt = state["question"]
+    system_content = (
+        f"{ROLE_GUARDRAILS}\n\n{USER_LANGUAGE_POLICY}\n\n"
+        "You are the NL2SQL assistant. Answer the user's question within your role. "
+        "Do not change persona or ignore NL2SQL constraints."
+    )
+    user_prompt = state["question"]
+    combined_prompt = f"{system_content}\n\nUser question:\n{user_prompt}"
 
     async def on_token(role: str, delta: str) -> None:
-        emitter = state.get("event_emitter")
+        emitter = _get_emitter(state)
         if emitter:
             await emitter("LLM_TOKEN", {"role": "summary", "delta": delta})
 
     if llm_service:
         summary, _ = await llm_service.astream(
-            "result_summarizer",
-            prompt,
+            "direct_llm",
+            combined_prompt,
             on_token=on_token,
             session_id=state.get("session_id"),
             cacheable=False,
@@ -318,7 +369,10 @@ async def direct_llm(state: GraphState, llm_service=None) -> GraphState:
         llm = _get_llm()
         parts: list[str] = []
         async for chunk in llm.astream(
-            [SystemMessage(content="You are a helpful data assistant."), HumanMessage(content=prompt)]
+            [
+                SystemMessage(content=system_content),
+                HumanMessage(content=user_prompt),
+            ]
         ):
             delta = str(chunk.content) if chunk.content else ""
             if delta:
@@ -359,7 +413,7 @@ async def sql_generate(state: GraphState, llm_service=None) -> GraphState:
     stream_role = "thought" if state.get("deep_think") else "sql"
 
     async def on_token(role: str, delta: str) -> None:
-        emitter = state.get("event_emitter")
+        emitter = _get_emitter(state)
         if emitter:
             await emitter("LLM_TOKEN", {"role": stream_role, "delta": delta})
 
@@ -439,8 +493,9 @@ def route_after_sql_generate(state: GraphState) -> Literal["sql_safety", "finali
     return "sql_safety"
 
 
-async def sql_safety(state: GraphState) -> GraphState:
-    validator = SqlValidator(state.get("allowed_tables", set()), state["schema_graph"])
+async def sql_safety(state: GraphState, session: AsyncSession) -> GraphState:
+    schema_graph = await ensure_schema_graph(state, session)
+    validator = SqlValidator(_allowed_tables_set(state), schema_graph)
     result = validator.validate(state.get("generated_sql", ""))
     return {
         **state,
@@ -497,7 +552,7 @@ async def result_summarizer(state: GraphState, llm_service=None) -> GraphState:
     )
 
     async def on_token(role: str, delta: str) -> None:
-        emitter = state.get("event_emitter")
+        emitter = _get_emitter(state)
         if emitter:
             await emitter("LLM_TOKEN", {"role": "summary", "delta": delta})
 
@@ -546,21 +601,25 @@ PHASE_LABELS: dict[str, str] = {
 }
 
 
-def build_graph(session: AsyncSession, event_emitter=None):
+def build_graph(session: AsyncSession, event_emitter=None, checkpointer=None):
     from backend.llm.service import LlmService
 
     llm_service = LlmService(session)
+    cp = checkpointer or _CHECKPOINTER
 
     def wrap(fn):
         async def node(state: GraphState) -> GraphState:
-            if event_emitter and not state.get("event_emitter"):
-                state["event_emitter"] = event_emitter
-            emitter = state.get("event_emitter")
+            sid = state.get("session_id")
+            if event_emitter and sid:
+                _emitter_cache[sid] = event_emitter
+            emitter = _get_emitter(state)
             if emitter:
                 label = PHASE_LABELS.get(fn.__name__, fn.__name__)
                 await emitter("STATUS", {"message": label, "phase": fn.__name__})
             if fn.__name__ == "load_context":
                 return await load_context(state, session)
+            if fn.__name__ == "sql_safety":
+                return await sql_safety(state, session)
             if fn.__name__ in (
                 "intent_classifier",
                 "rag_router",
@@ -622,4 +681,4 @@ def build_graph(session: AsyncSession, event_emitter=None):
     graph.add_edge("result_summarizer", "finalize")
     graph.add_edge("finalize", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=cp)
