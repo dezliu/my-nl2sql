@@ -3,6 +3,9 @@
 import { gql, useMutation, useQuery } from "@apollo/client";
 import { useState } from "react";
 
+import { AdminErrorBanner } from "../../../components/AdminErrorBanner";
+import { formatMutationError } from "../../../lib/mutation-error";
+
 const GLOSSARY = gql`
   query BusinessGlossary {
     businessGlossary {
@@ -80,6 +83,7 @@ export default function BusinessPage() {
   const [selectedDs, setSelectedDs] = useState<number | null>(null);
   const [newTerm, setNewTerm] = useState({ term: "", definition: "", aliases: "" });
   const [newKnowledge, setNewKnowledge] = useState({ title: "", content: "", category: "faq" });
+  const [error, setError] = useState<string | null>(null);
 
   const { data: dsData } = useQuery(DATASOURCES);
   const { data: glossaryData, refetch: refetchGlossary } = useQuery(GLOSSARY);
@@ -99,22 +103,33 @@ export default function BusinessPage() {
   const datasources = dsData?.datasources || [];
 
   const toggleGlossaryIndex = async (id: number, indexed: boolean) => {
-    const input = { docType: "glossary", sourceId: id };
-    if (indexed) await unindexItem({ variables: { input } });
-    else await indexItem({ variables: { input } });
-    refetchGlossary();
+    try {
+      setError(null);
+      const input = { docType: "glossary", sourceId: id };
+      if (indexed) await unindexItem({ variables: { input } });
+      else await indexItem({ variables: { input } });
+      refetchGlossary();
+    } catch (err) {
+      setError(formatMutationError(err));
+    }
   };
 
   const toggleKnowledgeIndex = async (id: number, indexed: boolean) => {
-    const input = { docType: "knowledge", sourceId: id };
-    if (indexed) await unindexItem({ variables: { input } });
-    else await indexItem({ variables: { input } });
-    refetchKnowledge();
+    try {
+      setError(null);
+      const input = { docType: "knowledge", sourceId: id };
+      if (indexed) await unindexItem({ variables: { input } });
+      else await indexItem({ variables: { input } });
+      refetchKnowledge();
+    } catch (err) {
+      setError(formatMutationError(err));
+    }
   };
 
   return (
     <div>
       <h1 className="page-title">业务数据</h1>
+      <AdminErrorBanner message={error} onDismiss={() => setError(null)} />
 
       <div className="card">
         <h3>业务术语</h3>
@@ -131,20 +146,24 @@ export default function BusinessPage() {
           />
           <button
             className="btn"
-            onClick={() =>
-              createGlossary({
-                variables: {
-                  input: {
-                    term: newTerm.term,
-                    definition: newTerm.definition,
-                    aliases: newTerm.aliases || null,
+            onClick={async () => {
+              try {
+                setError(null);
+                await createGlossary({
+                  variables: {
+                    input: {
+                      term: newTerm.term,
+                      definition: newTerm.definition,
+                      aliases: newTerm.aliases || null,
+                    },
                   },
-                },
-              }).then(() => {
+                });
                 setNewTerm({ term: "", definition: "", aliases: "" });
                 refetchGlossary();
-              })
-            }
+              } catch (err) {
+                setError(formatMutationError(err));
+              }
+            }}
           >
             添加术语
           </button>
@@ -175,11 +194,15 @@ export default function BusinessPage() {
                     <button
                       className="btn btn-sm"
                       style={{ marginLeft: "0.5rem" }}
-                      onClick={() =>
-                        deleteGlossary({ variables: { glossaryId: g.id } }).then(() =>
-                          refetchGlossary()
-                        )
-                      }
+                      onClick={async () => {
+                        try {
+                          setError(null);
+                          await deleteGlossary({ variables: { glossaryId: g.id } });
+                          refetchGlossary();
+                        } catch (err) {
+                          setError(formatMutationError(err));
+                        }
+                      }}
                     >
                       删除
                     </button>
@@ -220,21 +243,25 @@ export default function BusinessPage() {
           />
           <button
             className="btn"
-            onClick={() =>
-              createKnowledge({
-                variables: {
-                  input: {
-                    title: newKnowledge.title,
-                    content: newKnowledge.content,
-                    category: newKnowledge.category,
-                    datasourceId: selectedDs,
+            onClick={async () => {
+              try {
+                setError(null);
+                await createKnowledge({
+                  variables: {
+                    input: {
+                      title: newKnowledge.title,
+                      content: newKnowledge.content,
+                      category: newKnowledge.category,
+                      datasourceId: selectedDs,
+                    },
                   },
-                },
-              }).then(() => {
+                });
                 setNewKnowledge({ title: "", content: "", category: "faq" });
                 refetchKnowledge();
-              })
-            }
+              } catch (err) {
+                setError(formatMutationError(err));
+              }
+            }}
           >
             添加知识
           </button>
@@ -265,11 +292,15 @@ export default function BusinessPage() {
                     <button
                       className="btn btn-sm"
                       style={{ marginLeft: "0.5rem" }}
-                      onClick={() =>
-                        deleteKnowledge({ variables: { entryId: k.id } }).then(() =>
-                          refetchKnowledge()
-                        )
-                      }
+                      onClick={async () => {
+                        try {
+                          setError(null);
+                          await deleteKnowledge({ variables: { entryId: k.id } });
+                          refetchKnowledge();
+                        } catch (err) {
+                          setError(formatMutationError(err));
+                        }
+                      }}
                     >
                       删除
                     </button>

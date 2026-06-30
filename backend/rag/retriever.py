@@ -37,7 +37,12 @@ class RetrievedChunk:
 
 class HybridRetriever:
     def __init__(self) -> None:
-        self.client = QdrantClient(url=settings.qdrant_url)
+        # Local Qdrant must bypass system HTTP/SOCKS proxy (otherwise 502 Bad Gateway).
+        self.client = QdrantClient(
+            url=settings.qdrant_url,
+            check_compatibility=False,
+            trust_env=False,
+        )
         self.dense_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
         self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
         self._ensure_collection()
@@ -56,7 +61,8 @@ class HybridRetriever:
             )
 
     def _embed_dense(self, text: str) -> list[float]:
-        return list(next(self.dense_model.embed([text])))
+        vec = next(self.dense_model.embed([text]))
+        return [float(x) for x in vec]
 
     def _embed_sparse(self, text: str) -> SparseVector:
         result = next(self.sparse_model.embed([text]))

@@ -6,7 +6,7 @@ UVICORN := $(VENV)/bin/uvicorn
 ALEMBIC := $(VENV)/bin/alembic
 PYTEST := $(VENV)/bin/pytest
 
-.PHONY: up down migrate seed api worker web admin test install
+.PHONY: up down migrate seed upgrade-prompts api worker web admin test install
 
 up:
 	docker compose up -d
@@ -19,6 +19,9 @@ migrate:
 
 seed:
 	$(PY) -m backend.scripts.seed
+
+upgrade-prompts:
+	$(PY) -m backend.scripts.upgrade_prompts
 
 api:
 	$(UVICORN) backend.api.main:app --reload --port 8000

@@ -61,8 +61,8 @@ async def run_workflow(
             await queue.put({"type": event_type, "data": data})
 
     initial_state["event_emitter"] = emit
-    graph = build_graph(db_session, event_emitter=emit)
     try:
+        graph = build_graph(db_session, event_emitter=emit)
         async for event in graph.astream(initial_state, stream_mode="values"):
             events = event.get("stream_events", [])
             for e in events:
@@ -70,6 +70,7 @@ async def run_workflow(
     except Exception as e:
         await emit("ERROR", {"message": str(e)})
     finally:
+        await emit("DONE", {"session_id": session_id})
         if ask_session:
             ask_session.done = True
             await ask_session.events.put(None)

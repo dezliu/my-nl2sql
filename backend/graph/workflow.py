@@ -6,14 +6,14 @@ import uuid
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
-from backend.db.models import Datasource, FkRelationship, TableMetadata
+from backend.db.models import ColumnMetadata, Datasource, FkRelationship, TableMetadata
 from backend.db.prompts import load_active_prompts
+from backend.llm.client import create_chat_llm
 from backend.rag.retriever import HybridRetriever
 from backend.sql.schema import SchemaGraph, SqlValidator, execute_sql
 
@@ -39,6 +39,7 @@ class GraphState(TypedDict, total=False):
     schema_context: str
     schema_graph: SchemaGraph
     allowed_tables: set[str]
+    cannot_answer: bool
     generated_sql: str
     sql_valid: bool
     sql_errors: list[str]
@@ -55,12 +56,8 @@ def _emit(state: GraphState, event_type: str, data: Any) -> list[StreamEvent]:
     return [{"type": event_type, "data": data}]
 
 
-def _get_llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        model=settings.openai_model,
-        api_key=settings.openai_api_key or "sk-placeholder",
-        streaming=True,
-    )
+def _get_llm():
+    return create_chat_llm(streaming=True)
 
 
 def _format_prompt(template: str, **kwargs: Any) -> str:
@@ -110,6 +107,38 @@ async def load_context(state: GraphState, session: AsyncSession) -> GraphState:
         if from_name and to_name:
             schema_graph.add_fk(from_name, fk.from_column, to_name, fk.to_column)
 
+    table_ids = list(table_id_to_name.keys())
+    columns_db: list[ColumnMetadata] = []
+    if table_ids:
+        columns_result = await session.execute(
+            select(ColumnMetadata).where(ColumnMetadata.table_id.in_(table_ids))
+        )
+        columns_db = list(columns_result.scalars().all())
+
+    table_dicts = [
+        {"table_name": t.table_name, "description": t.description or ""} for t in tables
+    ]
+    column_dicts = [
+        {
+            "table_name": table_id_to_name[c.table_id],
+            "column_name": c.column_name,
+            "data_type": c.data_type,
+            "description": c.description,
+            "is_blacklisted": c.is_blacklisted,
+        }
+        for c in columns_db
+        if c.table_id in table_id_to_name
+    ]
+    relevant_tables = sorted(schema_graph.allowed_tables)
+    schema_context = schema_graph.build_schema_context(
+        table_dicts, column_dicts, relevant_tables
+    )
+    if relevant_tables:
+        schema_context += (
+            "\n\n## Allowed tables (ONLY use these)\n"
+            + ", ".join(relevant_tables)
+        )
+
     return {
         **state,
         "session_id": state.get("session_id") or str(uuid.uuid4()),
@@ -117,6 +146,7 @@ async def load_context(state: GraphState, session: AsyncSession) -> GraphState:
         "connection_url": connection_url,
         "schema_graph": schema_graph,
         "allowed_tables": schema_graph.allowed_tables,
+        "schema_context": schema_context,
         "loop_count": 0,
         "sql_retry_count": 0,
         "rag_chunks": [],
@@ -205,30 +235,11 @@ async def hybrid_retrieve(state: GraphState) -> GraphState:
     ]
     events = _emit(state, "RAG_CHUNK", {"chunks": chunk_dicts, "count": len(chunk_dicts)})
 
-    table_names = _extract_table_names_from_chunks(chunk_dicts)
-    schema_context = state["schema_graph"].build_schema_context(
-        [{"table_name": t, "description": ""} for t in table_names],
-        [],
-        table_names,
-    )
     return {
         **state,
         "rag_chunks": chunk_dicts,
-        "schema_context": schema_context,
         "stream_events": events,
     }
-
-
-def _extract_table_names_from_chunks(chunks: list[dict]) -> list[str]:
-    names: list[str] = []
-    for c in chunks:
-        content = c.get("content", "")
-        match = re.search(r"Table:\s*(\w+)", content)
-        if match:
-            names.append(match.group(1))
-    return list(dict.fromkeys(names)) or list(
-        {t for t in re.findall(r"\b(\w+)\s*\.", " ".join(c.get("content", "") for c in chunks))}
-    )
 
 
 async def retrieval_judge(state: GraphState, llm_service=None) -> GraphState:
@@ -259,11 +270,16 @@ def route_after_judge(state: GraphState) -> Literal["query_expander", "sql_gener
     return "sql_generate"
 
 
+def _format_allowed_tables(state: GraphState) -> str:
+    return ", ".join(sorted(state.get("allowed_tables", [])))
+
+
 async def query_expander(state: GraphState, llm_service=None) -> GraphState:
     prompt = _format_prompt(
         state["system_prompts"].get("query_expander", ""),
         question=state["question"],
         intent=state.get("intent", ""),
+        allowed_tables=_format_allowed_tables(state),
     )
     if llm_service:
         expanded, _ = await llm_service.invoke(
@@ -320,15 +336,22 @@ async def direct_llm(state: GraphState, llm_service=None) -> GraphState:
 async def sql_generate(state: GraphState, llm_service=None) -> GraphState:
     role = "react_reasoner" if state.get("deep_think") else "sql_generator"
     chunks_text = "\n---\n".join(c["content"] for c in state.get("rag_chunks", []))
-    safety_rules = "SELECT only; whitelist tables; include LIMIT"
+    allowed_tables_str = _format_allowed_tables(state)
+    safety_rules = (
+        "SELECT only; include LIMIT; "
+        f"whitelist tables: {allowed_tables_str}"
+    )
     if state.get("sql_errors"):
-        chunks_text += f"\n\nPrevious errors: {state['sql_errors']}"
+        chunks_text += f"\n\nPrevious validation errors: {state['sql_errors']}"
+        chunks_text += f"\nALLOWED TABLES (use ONLY these): {allowed_tables_str}"
+        chunks_text += "\nFORBIDDEN: any table not in the list above"
     prompt = _format_prompt(
         state["system_prompts"].get(role, ""),
         question=state["question"],
         schema_context=state.get("schema_context", ""),
         chunks=chunks_text,
         safety_rules=safety_rules,
+        allowed_tables=allowed_tables_str,
     )
 
     cacheable = not state.get("deep_think")
@@ -358,26 +381,62 @@ async def sql_generate(state: GraphState, llm_service=None) -> GraphState:
                 await on_token(role, delta)
         content = "".join(parts)
 
+    cannot_answer = False
+    explanation = ""
+
     if state.get("deep_think"):
         events = _emit(state, "THOUGHT", {"text": "Starting ReAct reasoning..."})
         events += _emit(state, "THOUGHT", {"text": content[:500]})
-        sql_match = re.search(r"SELECT\s+.+?(?:;|$)", content, re.IGNORECASE | re.DOTALL)
-        sql = sql_match.group(0).strip().rstrip(";") if sql_match else ""
+        parsed = _parse_json(content)
+        cannot_answer = bool(parsed.get("cannot_answer"))
+        explanation = str(parsed.get("explanation", ""))
+        if cannot_answer:
+            sql = ""
+        else:
+            sql_match = re.search(r"SELECT\s+.+?(?:;|$)", content, re.IGNORECASE | re.DOTALL)
+            sql = sql_match.group(0).strip().rstrip(";") if sql_match else ""
+            if not sql and parsed.get("sql"):
+                sql = str(parsed.get("sql", "")).strip()
     else:
         parsed = _parse_json(content)
-        sql = parsed.get("sql", content)
+        cannot_answer = bool(parsed.get("cannot_answer"))
+        explanation = str(parsed.get("explanation", ""))
+        if cannot_answer:
+            sql = ""
+        else:
+            sql = str(parsed.get("sql", content) or "").strip()
 
     retry_count = state.get("sql_retry_count", 0)
     if state.get("sql_errors"):
         retry_count += 1
 
-    return {
+    result_state: GraphState = {
         **state,
         "generated_sql": sql,
+        "cannot_answer": cannot_answer,
         "sql_retry_count": retry_count,
         "sql_errors": [],
-        "stream_events": events + _emit(state, "SQL", {"sql": sql}),
+        "stream_events": events,
     }
+
+    if cannot_answer:
+        summary = explanation or "当前数据源中没有能回答该问题的表，请在管理后台补充元数据或调整提问。"
+        result_state["summary"] = summary
+        result_state["sql_valid"] = False
+        result_state["stream_events"] = events + [
+            *_emit(state, "STATUS", {"cannot_answer": True}),
+            *_emit(state, "SUMMARY", {"text": summary}),
+        ]
+    elif sql:
+        result_state["stream_events"] = events + _emit(state, "SQL", {"sql": sql})
+
+    return result_state
+
+
+def route_after_sql_generate(state: GraphState) -> Literal["sql_safety", "finalize"]:
+    if state.get("cannot_answer"):
+        return "finalize"
+    return "sql_safety"
 
 
 async def sql_safety(state: GraphState) -> GraphState:
@@ -470,15 +529,36 @@ async def finalize(state: GraphState) -> GraphState:
     return {**state, "stream_events": _emit(state, "DONE", {"session_id": state.get("session_id")})}
 
 
+PHASE_LABELS: dict[str, str] = {
+    "load_context": "加载数据源与 Prompt…",
+    "intent_classifier": "识别问题意图…",
+    "direct_reply": "生成回复…",
+    "rag_router": "判断是否需要检索…",
+    "hybrid_retrieve": "检索相关知识…",
+    "retrieval_judge": "评估检索结果…",
+    "query_expander": "扩展查询…",
+    "direct_llm": "生成回答…",
+    "sql_generate": "生成 SQL…",
+    "sql_safety": "校验 SQL 安全性…",
+    "execute_or_return": "执行查询…",
+    "result_summarizer": "总结查询结果…",
+    "finalize": "完成",
+}
+
+
 def build_graph(session: AsyncSession, event_emitter=None):
     from backend.llm.service import LlmService
 
     llm_service = LlmService(session)
 
-    async def wrap(fn):
+    def wrap(fn):
         async def node(state: GraphState) -> GraphState:
             if event_emitter and not state.get("event_emitter"):
                 state["event_emitter"] = event_emitter
+            emitter = state.get("event_emitter")
+            if emitter:
+                label = PHASE_LABELS.get(fn.__name__, fn.__name__)
+                await emitter("STATUS", {"message": label, "phase": fn.__name__})
             if fn.__name__ == "load_context":
                 return await load_context(state, session)
             if fn.__name__ in (
@@ -528,7 +608,11 @@ def build_graph(session: AsyncSession, event_emitter=None):
     graph.add_conditional_edges("retrieval_judge", route_after_judge)
     graph.add_edge("query_expander", "hybrid_retrieve")
     graph.add_edge("direct_llm", "finalize")
-    graph.add_edge("sql_generate", "sql_safety")
+    graph.add_conditional_edges(
+        "sql_generate",
+        route_after_sql_generate,
+        {"sql_safety": "sql_safety", "finalize": "finalize"},
+    )
     graph.add_conditional_edges(
         "sql_safety",
         route_after_safety,

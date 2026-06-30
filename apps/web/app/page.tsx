@@ -1,7 +1,7 @@
 "use client";
 
 import { gql, useQuery } from "@apollo/client";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { askStream, type SseEvent } from "../lib/sse";
 
@@ -15,12 +15,37 @@ const DATASOURCES_QUERY = gql`
   }
 `;
 
-type StreamEvent = SseEvent;
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  streaming: boolean;
+  phase?: string;
+  sql?: string;
+  result?: Record<string, unknown>;
+  error?: string;
+};
+
+const PHASE_HINT: Record<string, string> = {
+  connected: "已连接",
+  load_context: "加载上下文",
+  intent_classifier: "识别意图",
+  rag_router: "路由判断",
+  hybrid_retrieve: "知识检索",
+  retrieval_judge: "评估检索",
+  query_expander: "查询扩展",
+  sql_generate: "生成 SQL",
+  sql_safety: "SQL 校验",
+  execute_or_return: "执行查询",
+  result_summarizer: "生成总结",
+  direct_llm: "生成回答",
+  direct_reply: "直接回复",
+};
 
 function ResultTable({ data }: { data: Record<string, unknown> }) {
   const columns = (data.columns as string[]) || [];
   const rows = (data.rows as Record<string, unknown>[]) || [];
-  if (!columns.length) return <pre>{JSON.stringify(data, null, 2)}</pre>;
+  if (!columns.length) return <pre className="result-raw">{JSON.stringify(data, null, 2)}</pre>;
   return (
     <table className="result-table">
       <thead>
@@ -43,66 +68,39 @@ function ResultTable({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-function StreamingText({ role, text, active }: { role: string; text: string; active: boolean }) {
+function ChatBubble({ message }: { message: ChatMessage }) {
+  const isUser = message.role === "user";
+
   return (
-    <div className={`event-card ${role}`}>
-      <div className="event-label">{role.toUpperCase()}</div>
-      <div className="event-content">
-        {text}
-        {active && <span className="typing-cursor">▋</span>}
+    <div className={`chat-row ${isUser ? "chat-row-user" : "chat-row-assistant"}`}>
+      <div className={`chat-avatar ${isUser ? "avatar-user" : "avatar-assistant"}`}>
+        {isUser ? "你" : "AI"}
       </div>
-    </div>
-  );
-}
-
-function EventCard({ event }: { event: StreamEvent }) {
-  const typeClass = event.eventType.toLowerCase().replace("_", "");
-  const label = event.eventType;
-
-  let content: React.ReactNode;
-  switch (event.eventType) {
-    case "INTENT":
-      content = <span>意图: {String(event.data.intent)}</span>;
-      break;
-    case "RAG_CHUNK":
-      content = (
-        <div>
-          检索到 {String(event.data.count)} 条相关片段
-          {(event.data.chunks as { content: string; score: number }[])?.map((c, i) => (
-            <div key={i} style={{ marginTop: "0.5rem", opacity: 0.8 }}>
-              [{c.score?.toFixed(3)}] {c.content?.slice(0, 200)}...
-            </div>
-          ))}
-        </div>
-      );
-      break;
-    case "LLM_TOKEN":
-      return null;
-    case "THOUGHT":
-      content = <span>{String(event.data.text)}</span>;
-      break;
-    case "SQL":
-      content = <code>{String(event.data.sql)}</code>;
-      break;
-    case "RESULT":
-      content = <ResultTable data={event.data} />;
-      break;
-    case "SUMMARY":
-      content = <span>{String(event.data.text)}</span>;
-      break;
-    case "ERROR":
-      content = <span style={{ color: "#ef4444" }}>{String(event.data.message)}</span>;
-      break;
-    case "DONE":
-      return null;
-    default:
-      content = <pre>{JSON.stringify(event.data, null, 2)}</pre>;
-  }
-
-  return (
-    <div className={`event-card ${typeClass}`}>
-      <div className="event-label">{label}</div>
-      <div className="event-content">{content}</div>
+      <div className={`chat-bubble ${isUser ? "bubble-user" : "bubble-assistant"}`}>
+        {!isUser && message.phase && message.streaming && (
+          <div className="chat-phase">{message.phase}</div>
+        )}
+        {message.content ? (
+          <div className="chat-content">
+            {message.content}
+            {message.streaming && <span className="typing-cursor">▋</span>}
+          </div>
+        ) : message.streaming ? (
+          <div className="chat-typing">
+            <span className="dot" />
+            <span className="dot" />
+            <span className="dot" />
+          </div>
+        ) : null}
+        {message.sql && (
+          <pre className="chat-sql">
+            <span className="chat-sql-label">SQL</span>
+            {message.sql}
+          </pre>
+        )}
+        {message.result && <ResultTable data={message.result} />}
+        {message.error && <div className="chat-error">{message.error}</div>}
+      </div>
     </div>
   );
 }
@@ -112,114 +110,202 @@ export default function HomePage() {
   const [deepThink, setDeepThink] = useState(false);
   const [executionMode, setExecutionMode] = useState("AUTO");
   const [datasourceId, setDatasourceId] = useState<number | null>(null);
-  const [events, setEvents] = useState<StreamEvent[]>([]);
-  const [streaming, setStreaming] = useState<Record<string, { text: string; active: boolean }>>({});
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const assistantIdRef = useRef<string | null>(null);
+  const streamBuffersRef = useRef<Record<string, string>>({});
 
   const { data: dsData } = useQuery(DATASOURCES_QUERY);
 
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const updateAssistant = useCallback((patch: Partial<ChatMessage>) => {
+    const id = assistantIdRef.current;
+    if (!id) return;
+    setMessages((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, ...patch } : m))
+    );
+  }, []);
+
+  const handleStreamEvent = useCallback(
+    (evt: SseEvent) => {
+      switch (evt.eventType) {
+        case "STATUS": {
+          const phase = String(evt.data.phase ?? "");
+          const msg = String(evt.data.message ?? PHASE_HINT[phase] ?? "处理中…");
+          updateAssistant({ phase: msg, streaming: true });
+          break;
+        }
+        case "INTENT":
+          updateAssistant({
+            phase: `意图：${String(evt.data.intent)}`,
+            streaming: true,
+          });
+          break;
+        case "RAG_CHUNK":
+          updateAssistant({
+            phase: `检索到 ${String(evt.data.count)} 条相关片段`,
+            streaming: true,
+          });
+          break;
+        case "LLM_TOKEN": {
+          const role = String(evt.data.role || "summary");
+          const delta = String(evt.data.delta || "");
+          const buffers = streamBuffersRef.current;
+          buffers[role] = (buffers[role] || "") + delta;
+          const combined = Object.values(buffers).join("\n\n");
+          updateAssistant({
+            content: combined,
+            streaming: true,
+            phase: role === "sql" ? "正在生成 SQL…" : role === "thought" ? "深度思考中…" : "正在生成回答…",
+          });
+          break;
+        }
+        case "SQL":
+          updateAssistant({
+            sql: String(evt.data.sql ?? ""),
+            phase: "SQL 已生成",
+            streaming: true,
+          });
+          break;
+        case "RESULT":
+          updateAssistant({
+            result: evt.data,
+            phase: "查询完成",
+            streaming: true,
+          });
+          break;
+        case "SUMMARY": {
+          const text = String(evt.data.text ?? "");
+          if (text) {
+            updateAssistant({ content: text, streaming: true, phase: "总结中…" });
+          }
+          break;
+        }
+        case "ERROR": {
+          const errs = Array.isArray(evt.data.errors) ? evt.data.errors : [];
+          const detail = errs.length ? `: ${errs.join("; ")}` : "";
+          updateAssistant({
+            error: `${String(evt.data.message)}${detail}`,
+            streaming: false,
+            phase: undefined,
+          });
+          break;
+        }
+        case "DONE":
+          updateAssistant({ streaming: false, phase: undefined });
+          break;
+        default:
+          break;
+      }
+    },
+    [updateAssistant]
+  );
+
   const handleSubmit = useCallback(async () => {
-    if (!question.trim() || !datasourceId) return;
+    if (!question.trim() || !datasourceId || loading) return;
 
     abortRef.current?.abort();
     abortRef.current = new AbortController();
 
-    setEvents([]);
-    setStreaming({});
+    const userMsg: ChatMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: question.trim(),
+      streaming: false,
+    };
+    const assistantId = `assistant-${Date.now()}`;
+    assistantIdRef.current = assistantId;
+    streamBuffersRef.current = {};
+
+    const assistantMsg: ChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      streaming: true,
+      phase: "正在连接…",
+    };
+
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setLoading(true);
 
     try {
       await askStream(
         {
-          question,
+          question: question.trim(),
           datasourceId,
           deepThink,
           executionMode,
         },
-        (evt) => {
-          if (evt.eventType === "LLM_TOKEN") {
-            const role = String(evt.data.role || "summary");
-            const delta = String(evt.data.delta || "");
-            setStreaming((prev) => {
-              const current = prev[role]?.text ?? "";
-              return {
-                ...prev,
-                [role]: { text: current + delta, active: !evt.data.done },
-              };
-            });
-            return;
-          }
-
-          if (evt.eventType === "SUMMARY" || evt.eventType === "SQL") {
-            const role = evt.eventType === "SQL" ? "sql" : "summary";
-            setStreaming((prev) => ({
-              ...prev,
-              [role]: { text: String(evt.data.text ?? evt.data.sql ?? ""), active: false },
-            }));
-          }
-
-          setEvents((prev) => [...prev, evt]);
-
-          if (evt.eventType === "DONE") {
-            setLoading(false);
-            setStreaming((prev) => {
-              const next = { ...prev };
-              for (const key of Object.keys(next)) {
-                next[key] = { ...next[key], active: false };
-              }
-              return next;
-            });
-          }
-        },
+        handleStreamEvent,
         abortRef.current.signal
       );
+      updateAssistant({ streaming: false, phase: undefined });
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
-        setEvents((prev) => [
-          ...prev,
-          { eventType: "ERROR", data: { message: String(err) } },
-        ]);
+        updateAssistant({
+          error: String(err),
+          streaming: false,
+          phase: undefined,
+        });
       }
     } finally {
       setLoading(false);
-      setStreaming((prev) => {
-        const next = { ...prev };
-        for (const key of Object.keys(next)) {
-          next[key] = { ...next[key], active: false };
-        }
-        return next;
-      });
+      assistantIdRef.current = null;
     }
-  }, [question, datasourceId, deepThink, executionMode]);
+  }, [question, datasourceId, deepThink, executionMode, loading, handleStreamEvent, updateAssistant]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
 
   const datasources = dsData?.datasources || [];
 
   return (
-    <div className="container">
-      <div className="header">
+    <div className="chat-layout">
+      <header className="chat-header">
         <h1>NL2SQL</h1>
         <p>用自然语言查询数据库</p>
+      </header>
+
+      <div className="chat-messages">
+        {messages.length === 0 && (
+          <div className="chat-empty">
+            <p>输入问题开始对话，例如：</p>
+            <ul>
+              <li>查询每个用户的订单总数</li>
+              <li>最近 7 天的销售额趋势</li>
+            </ul>
+          </div>
+        )}
+        {messages.map((m) => (
+          <ChatBubble key={m.id} message={m} />
+        ))}
+        <div ref={bottomRef} />
       </div>
 
-      <div className="input-area">
-        <textarea
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder="例如：查询每个用户的订单总数"
-        />
-        <div className="controls">
+      <div className="chat-composer">
+        <div className="composer-options">
           <label>
             <input
               type="checkbox"
               checked={deepThink}
               onChange={(e) => setDeepThink(e.target.checked)}
+              disabled={loading}
             />
-            深度思考 (ReAct)
+            深度思考
           </label>
           <select
             value={executionMode}
             onChange={(e) => setExecutionMode(e.target.value)}
+            disabled={loading}
           >
             <option value="AUTO">自动执行</option>
             <option value="GENERATE_ONLY">仅生成 SQL</option>
@@ -228,6 +314,7 @@ export default function HomePage() {
           <select
             value={datasourceId ?? ""}
             onChange={(e) => setDatasourceId(Number(e.target.value))}
+            disabled={loading}
           >
             <option value="">选择数据源</option>
             {datasources.map((ds: { id: number; name: string }) => (
@@ -236,21 +323,24 @@ export default function HomePage() {
               </option>
             ))}
           </select>
-          <button className="btn-primary" onClick={handleSubmit} disabled={loading}>
-            {loading ? "处理中..." : "提问"}
+        </div>
+        <div className="composer-input-row">
+          <textarea
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="输入问题，Enter 发送，Shift+Enter 换行"
+            disabled={loading}
+            rows={2}
+          />
+          <button
+            className="btn-send"
+            onClick={handleSubmit}
+            disabled={loading || !question.trim() || !datasourceId}
+          >
+            {loading ? "…" : "发送"}
           </button>
         </div>
-      </div>
-
-      <div className="stream-area">
-        {Object.entries(streaming).map(([role, { text, active }]) =>
-          text ? (
-            <StreamingText key={role} role={role} text={text} active={active} />
-          ) : null
-        )}
-        {events.map((evt, i) => (
-          <EventCard key={i} event={evt} />
-        ))}
       </div>
     </div>
   );

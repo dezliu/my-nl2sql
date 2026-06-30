@@ -36,9 +36,15 @@ async def ask_stream(body: AskStreamRequest) -> StreamingResponse:
     }
 
     async def _run() -> None:
-        async with async_session_factory() as db_session:
-            await run_workflow(session_id, initial_state, db_session, event_emitter=emitter)
-        await queue.put(None)
+        try:
+            await emitter("STATUS", {"message": "已连接，开始处理…", "phase": "connected"})
+            async with async_session_factory() as db_session:
+                await run_workflow(session_id, initial_state, db_session, event_emitter=emitter)
+        except Exception as e:
+            await emitter("ERROR", {"message": str(e)})
+            await emitter("DONE", {"session_id": session_id})
+        finally:
+            await queue.put(None)
 
     asyncio.create_task(_run())
 

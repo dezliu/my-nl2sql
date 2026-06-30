@@ -18,8 +18,14 @@ Respond with JSON: {{"need_rag": true/false, "reason": "..."}}
 Intent: {intent}
 Question: {question}""",
     PromptRole.QUERY_EXPANDER.value: """Expand the user question to improve retrieval recall.
-Add synonyms, business terms, and related table/column names.
-Respond with the expanded question only.
+
+Rules:
+- Add synonyms and business terms only.
+- If you mention a table name, it MUST be one of: {allowed_tables}
+- Do NOT invent table or column names that are not in the allowed list.
+- Respond with the expanded question only (plain text, no JSON).
+
+Allowed tables: {allowed_tables}
 
 Question: {question}
 Intent: {intent}""",
@@ -30,41 +36,67 @@ Question: {question}
 Retrieved chunks:
 {chunks}
 Loop count: {loop_count}""",
-    PromptRole.SQL_GENERATOR.value: """You are an expert SQL generator. Generate MySQL SELECT only.
-Use the schema context and retrieved examples. Follow safety rules strictly.
+    PromptRole.SQL_GENERATOR.value: """You are an expert SQL generator for MySQL. Generate SELECT queries ONLY from the schema provided below.
 
-Safety rules:
-- SELECT only, no DDL/DML
-- Use tables from whitelist only
-- Include LIMIT clause
-- Use recommended JOIN paths when joining tables
+HARD RULES (violations are rejected):
+1. Use ONLY tables listed in Allowed tables: {allowed_tables}
+2. Use ONLY columns listed in Schema context below
+3. Do NOT invent table names, column names, or JOIN conditions
+4. Retrieved examples are reference only — do NOT import tables from examples if they are not in Schema context
+5. SELECT only, no DDL/DML; always include LIMIT
+6. Use recommended JOIN paths from Schema context when joining tables
+
+If the question CANNOT be answered using only the allowed tables and columns, do NOT guess or hallucinate SQL.
+Instead respond with cannot_answer=true and explain what business concepts/tables are missing.
 
 Question: {question}
+
+Allowed tables (ONLY these): {allowed_tables}
+
 Schema context:
 {schema_context}
 
-Retrieved examples:
+Retrieved examples (reference only, do not copy unknown tables):
 {chunks}
 
 Safety rules: {safety_rules}
 
-Respond with JSON: {{"sql": "...", "explanation": "..."}}""",
-    PromptRole.REACT_REASONER.value: """You are a SQL expert using ReAct reasoning.
+Respond with JSON only:
+{{"sql": "<SELECT ...>" or null, "explanation": "...", "cannot_answer": false}}
+
+When cannot_answer is true, set sql to null and explain why in explanation.""",
+    PromptRole.REACT_REASONER.value: """You are a SQL expert using ReAct reasoning for MySQL.
 Think step by step: Thought -> Action -> Observation.
-Available actions: query_schema, validate_sql, execute_sql.
-Generate correct MySQL SELECT queries.
+
+HARD RULES:
+1. Use ONLY tables in Allowed tables: {allowed_tables}
+2. Use ONLY columns in Schema context
+3. Do NOT invent table names, column names, or JOIN conditions
+4. Retrieved examples are reference only — do not copy tables not in Schema context
+5. SELECT only; always include LIMIT
+
+If the question cannot be answered with the allowed tables/columns, state cannot_answer in your final JSON and do NOT output SQL.
 
 Question: {question}
+
+Allowed tables (ONLY these): {allowed_tables}
+
 Schema context:
 {schema_context}
-Retrieved examples:
+
+Retrieved examples (reference only):
 {chunks}
-Safety rules: {safety_rules}""",
+
+Safety rules: {safety_rules}
+
+End with JSON: {{"sql": "<SELECT ...>" or null, "explanation": "...", "cannot_answer": false}}""",
     PromptRole.SQL_SAFETY.value: """Validate the SQL against safety rules.
+The SQL may ONLY reference tables in the allowed whitelist.
+
 Respond with JSON: {{"valid": true/false, "errors": [...]}}
 
 SQL: {sql}
-Allowed tables: {allowed_tables}""",
+Allowed tables (whitelist): {allowed_tables}""",
     PromptRole.RESULT_SUMMARIZER.value: """Summarize SQL query results in natural language for the user.
 
 Question: {question}
@@ -77,6 +109,14 @@ Respond with JSON: {{"score": 0.0-1.0, "reason": "..."}}
 Question: {question}
 Chunk: {chunk}""",
 }
+
+# Prompt roles upgraded by backend.scripts.upgrade_prompts
+UPGRADABLE_PROMPT_ROLES: tuple[str, ...] = (
+    PromptRole.QUERY_EXPANDER.value,
+    PromptRole.SQL_GENERATOR.value,
+    PromptRole.REACT_REASONER.value,
+    PromptRole.SQL_SAFETY.value,
+)
 
 
 async def load_active_prompts(session: AsyncSession) -> dict[str, str]:

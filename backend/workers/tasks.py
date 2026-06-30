@@ -34,15 +34,14 @@ async def _score_rag_chunks_async(
     import re
 
     from langchain_core.messages import HumanMessage
-    from langchain_openai import ChatOpenAI
-    from sqlalchemy import select
 
     from backend.config import settings
     from backend.db.models import RagAlert, RagQualityScore
     from backend.db.prompts import load_active_prompts
     from backend.db.session import async_session_factory
+    from backend.llm.client import create_chat_llm
 
-    llm = ChatOpenAI(model=settings.openai_model, api_key=settings.openai_api_key or "sk-placeholder")
+    llm = create_chat_llm(streaming=False)
     scored = 0
     alerts = 0
 

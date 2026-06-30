@@ -4,9 +4,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.llm.client import create_chat_llm
 from backend.cache.llm_cache import LlmCache
 from backend.config import settings
 
@@ -16,11 +16,7 @@ TokenCallback = Callable[[str, str], Awaitable[None]]
 class LlmService:
     def __init__(self, session: AsyncSession | None = None) -> None:
         self.session = session
-        self.llm = ChatOpenAI(
-            model=settings.openai_model,
-            api_key=settings.openai_api_key or "sk-placeholder",
-            streaming=True,
-        )
+        self.llm = create_chat_llm(streaming=True)
 
     async def invoke(
         self,
