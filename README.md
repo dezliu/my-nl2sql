@@ -70,3 +70,7 @@ cd apps/admin && npm install && npm run dev
 
 - User UI: http://localhost:4000
 - Admin UI: http://localhost:4001
+
+## Demonstration
+<img width="1280" height="720" alt="ScreenFlow1" src="https://github.com/user-attachments/assets/3c07e4d8-bfae-4e31-88c9-f4efb8782784" />
+
