@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { AdminModal } from "./AdminModal";
 
@@ -52,14 +52,13 @@ export function SearchableMultiSelect({
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState<string[]>(value);
 
-  useEffect(() => {
-    if (open) {
-      setDraft(value);
-      setSearch("");
-      onSearchChange?.("");
-      onOpen?.();
-    }
-  }, [open, value, onSearchChange, onOpen]);
+  const openModal = () => {
+    setDraft(value);
+    setSearch("");
+    onSearchChange?.("");
+    onOpen?.();
+    setOpen(true);
+  };
 
   const optionMap = useMemo(() => new Map(options.map((o) => [o.value, o])), [options]);
 
@@ -111,7 +110,7 @@ export function SearchableMultiSelect({
 
   return (
     <div className="picker-field">
-      <button type="button" className="picker-trigger-btn" onClick={() => setOpen(true)}>
+      <button type="button" className="picker-trigger-btn" onClick={openModal}>
         {value.length > 0 ? `已选 ${value.length} 项 · 点击修改` : placeholder}
       </button>
       {value.length > 0 && (

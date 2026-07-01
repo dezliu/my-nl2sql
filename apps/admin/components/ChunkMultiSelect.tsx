@@ -66,7 +66,11 @@ export function ChunkMultiSelect({
     [chunks]
   );
 
-  const stringValue = value.map(String);
+  const stringValue = useMemo(() => value.map(String), [value]);
+
+  const handleOpen = useCallback(() => {
+    void fetchChunks("");
+  }, [fetchChunks]);
 
   return (
     <SearchableMultiSelect
@@ -81,9 +85,7 @@ export function ChunkMultiSelect({
       noResultsMessage="无匹配 chunk"
       serverSearch
       onSearchChange={setSearch}
-      onOpen={() => {
-        void fetchChunks("");
-      }}
+      onOpen={handleOpen}
       modalWidth={860}
     />
   );
